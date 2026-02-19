@@ -1175,18 +1175,14 @@ async fn functional_context_window_limits_request_messages_and_compacts_history(
 }
 
 #[tokio::test]
-async fn spec_c01_warn_tier_compacts_to_warn_retention_with_summary() {
+async fn spec_2566_c01_warn_tier_schedules_background_compaction_without_immediate_truncation() {
     let client = Arc::new(CapturingMockClient {
-        responses: AsyncMutex::new(VecDeque::from([ChatResponse {
-            message: Message::assistant_text("ok"),
-            finish_reason: Some("stop".to_string()),
-            usage: ChatUsage::default(),
-        }])),
+        responses: AsyncMutex::new(VecDeque::new()),
         requests: AsyncMutex::new(Vec::new()),
     });
 
     let mut agent = Agent::new(
-        client.clone(),
+        client,
         AgentConfig {
             max_context_messages: Some(64),
             max_estimated_input_tokens: Some(240),
@@ -1207,36 +1203,153 @@ async fn spec_c01_warn_tier_compacts_to_warn_retention_with_summary() {
             "warn-tier assistant message {index} with enough text to consume tokens"
         )));
     }
-    let pre_prompt_len = agent.messages().len();
-    let expected_len = ((pre_prompt_len.saturating_add(1) * 70).saturating_add(99)) / 100;
+    let expected_len = agent.messages().len();
 
-    let _ = agent.prompt("latest").await.expect("prompt should succeed");
+    let first = agent.request_messages().await;
 
-    let requests = client.requests.lock().await;
-    let first_request = requests.first().expect("request should be captured");
-    assert_eq!(first_request.messages.len(), expected_len);
+    assert_eq!(first.len(), expected_len);
     assert!(
-        first_request
-            .messages
+        first
             .iter()
-            .any(|message| message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX)),
-        "warn tier should preserve summary compaction behavior"
+            .all(|message| !message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX)),
+        "first warn-tier pass should schedule background compaction without immediate truncation"
     );
 }
 
 #[tokio::test]
-async fn spec_c02_aggressive_tier_compacts_to_aggressive_retention() {
+async fn spec_2566_c02_warn_tier_applies_ready_background_compaction_on_subsequent_turn() {
     let client = Arc::new(CapturingMockClient {
-        responses: AsyncMutex::new(VecDeque::from([ChatResponse {
-            message: Message::assistant_text("ok"),
-            finish_reason: Some("stop".to_string()),
-            usage: ChatUsage::default(),
-        }])),
+        responses: AsyncMutex::new(VecDeque::new()),
         requests: AsyncMutex::new(Vec::new()),
     });
 
     let mut agent = Agent::new(
-        client.clone(),
+        client,
+        AgentConfig {
+            max_context_messages: Some(64),
+            max_estimated_input_tokens: Some(240),
+            context_compaction_warn_threshold_percent: 20,
+            context_compaction_aggressive_threshold_percent: 90,
+            context_compaction_emergency_threshold_percent: 95,
+            context_compaction_warn_retain_percent: 70,
+            context_compaction_aggressive_retain_percent: 50,
+            context_compaction_emergency_retain_percent: 50,
+            ..AgentConfig::default()
+        },
+    );
+    for index in 0..4 {
+        agent.append_message(Message::user(format!(
+            "warn-tier apply user message {index} with enough text to consume tokens"
+        )));
+        agent.append_message(Message::assistant_text(format!(
+            "warn-tier apply assistant message {index} with enough text to consume tokens"
+        )));
+    }
+    let baseline_len = agent.messages().len();
+    let expected_len = ((baseline_len * 70).saturating_add(99)) / 100;
+
+    let first = agent.request_messages().await;
+    assert_eq!(
+        first.len(),
+        baseline_len,
+        "first call should only schedule warn compaction"
+    );
+
+    let mut maybe_compacted = None;
+    for _ in 0..20 {
+        let candidate = agent.request_messages().await;
+        if candidate.len() == expected_len
+            && candidate
+                .iter()
+                .any(|message| message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX))
+        {
+            maybe_compacted = Some(candidate);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let compacted = maybe_compacted.expect("warn background compaction should apply");
+    assert_eq!(compacted.len(), expected_len);
+    assert!(compacted
+        .iter()
+        .any(|message| message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX)));
+}
+
+#[tokio::test]
+async fn regression_spec_2566_c03_stale_warn_background_result_is_ignored_and_rescheduled() {
+    let client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::new()),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+
+    let mut agent = Agent::new(
+        client,
+        AgentConfig {
+            max_context_messages: Some(64),
+            max_estimated_input_tokens: Some(240),
+            context_compaction_warn_threshold_percent: 20,
+            context_compaction_aggressive_threshold_percent: 90,
+            context_compaction_emergency_threshold_percent: 95,
+            context_compaction_warn_retain_percent: 70,
+            context_compaction_aggressive_retain_percent: 50,
+            context_compaction_emergency_retain_percent: 50,
+            ..AgentConfig::default()
+        },
+    );
+    for index in 0..4 {
+        agent.append_message(Message::user(format!(
+            "warn stale user message {index} with enough text to consume tokens"
+        )));
+        agent.append_message(Message::assistant_text(format!(
+            "warn stale assistant message {index} with enough text to consume tokens"
+        )));
+    }
+
+    let _ = agent.request_messages().await;
+    let mut rewritten_messages = agent.messages().to_vec();
+    rewritten_messages[1] =
+        Message::user("stale marker rewrite that invalidates previously scheduled source context");
+    agent.replace_messages(rewritten_messages);
+    let full_len_after_change = agent.messages().len();
+
+    let after_change = agent.request_messages().await;
+    assert_eq!(
+        after_change.len(),
+        full_len_after_change,
+        "stale warn result should not be applied to changed context"
+    );
+    assert!(after_change
+        .iter()
+        .all(|message| !message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX)));
+
+    let expected_retain_len = ((full_len_after_change * 70).saturating_add(99)) / 100;
+    let mut maybe_recompact = None;
+    for _ in 0..20 {
+        let candidate = agent.request_messages().await;
+        if candidate.len() == expected_retain_len
+            && candidate
+                .iter()
+                .any(|message| message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX))
+        {
+            maybe_recompact = Some(candidate);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let reapplied = maybe_recompact.expect("new warn context should eventually compact");
+    assert_eq!(reapplied.len(), expected_retain_len);
+}
+
+#[tokio::test]
+async fn regression_spec_2566_c04_aggressive_tier_remains_synchronous_with_summary() {
+    let client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::new()),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+
+    let mut agent = Agent::new(
+        client,
         AgentConfig {
             max_context_messages: Some(64),
             max_estimated_input_tokens: Some(220),
@@ -1257,36 +1370,29 @@ async fn spec_c02_aggressive_tier_compacts_to_aggressive_retention() {
             "aggressive-tier assistant message {index} with enough text to consume tokens"
         )));
     }
-    let pre_prompt_len = agent.messages().len();
-    let expected_len = ((pre_prompt_len.saturating_add(1) * 50).saturating_add(99)) / 100;
+    let baseline_len = agent.messages().len();
+    let expected_len = ((baseline_len * 50).saturating_add(99)) / 100;
 
-    let _ = agent.prompt("latest").await.expect("prompt should succeed");
+    let compacted = agent.request_messages().await;
 
-    let requests = client.requests.lock().await;
-    let first_request = requests.first().expect("request should be captured");
-    assert_eq!(first_request.messages.len(), expected_len);
+    assert_eq!(compacted.len(), expected_len);
     assert!(
-        first_request
-            .messages
+        compacted
             .iter()
             .any(|message| message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX)),
-        "aggressive tier should preserve summary compaction behavior"
+        "aggressive tier should keep synchronous summary compaction"
     );
 }
 
 #[tokio::test]
-async fn spec_c03_emergency_tier_hard_truncates_without_summary() {
+async fn regression_spec_2566_c05_emergency_tier_remains_hard_truncation_without_summary() {
     let client = Arc::new(CapturingMockClient {
-        responses: AsyncMutex::new(VecDeque::from([ChatResponse {
-            message: Message::assistant_text("ok"),
-            finish_reason: Some("stop".to_string()),
-            usage: ChatUsage::default(),
-        }])),
+        responses: AsyncMutex::new(VecDeque::new()),
         requests: AsyncMutex::new(Vec::new()),
     });
 
     let mut agent = Agent::new(
-        client.clone(),
+        client,
         AgentConfig {
             max_context_messages: Some(64),
             max_estimated_input_tokens: Some(100),
@@ -1307,25 +1413,22 @@ async fn spec_c03_emergency_tier_hard_truncates_without_summary() {
             "emergency-tier assistant message {index} with enough text to consume tokens"
         )));
     }
-    let pre_prompt_len = agent.messages().len();
-    let expected_len = ((pre_prompt_len.saturating_add(1) * 50).saturating_add(99)) / 100;
+    let baseline_len = agent.messages().len();
+    let expected_len = ((baseline_len * 50).saturating_add(99)) / 100;
 
-    let _ = agent.prompt("latest").await.expect("prompt should succeed");
+    let compacted = agent.request_messages().await;
 
-    let requests = client.requests.lock().await;
-    let first_request = requests.first().expect("request should be captured");
-    assert_eq!(first_request.messages.len(), expected_len);
+    assert_eq!(compacted.len(), expected_len);
     assert!(
-        first_request
-            .messages
+        compacted
             .iter()
             .all(|message| !message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX)),
-        "emergency tier should hard truncate without summary insertion"
+        "emergency tier should remain hard truncation with no summary"
     );
 }
 
 #[tokio::test]
-async fn spec_c04_below_warn_threshold_skips_tiered_compaction() {
+async fn regression_context_pressure_below_warn_threshold_skips_tiered_compaction() {
     let client = Arc::new(CapturingMockClient {
         responses: AsyncMutex::new(VecDeque::from([ChatResponse {
             message: Message::assistant_text("ok"),
