@@ -1,6 +1,6 @@
 # Spec #2566 - Task: implement warn-tier background compaction scheduling and apply flow
 
-Status: Reviewed
+Status: Implemented
 Priority: P0
 Milestone: M97
 Parent: #2565
