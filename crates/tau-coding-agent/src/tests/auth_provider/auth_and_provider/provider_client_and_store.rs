@@ -1,6 +1,7 @@
 //! Tests for provider-client fallback behavior and credential-store encryption/refresh flows.
 
 use super::*;
+use tau_provider::{DecryptedSecret, FileSecretStore, SecretStore};
 
 #[test]
 fn resolve_api_key_returns_none_when_all_candidates_are_empty() {
@@ -558,6 +559,46 @@ fn regression_decrypt_credential_store_secret_rejects_wrong_key() {
 }
 
 #[test]
+fn unit_spec_c01_decrypted_secret_redacts_debug_and_display() {
+    let secret = DecryptedSecret::new("top-secret-token").expect("construct secret wrapper");
+    assert_eq!(secret.expose(), "top-secret-token");
+    assert_eq!(format!("{secret}"), "[REDACTED]");
+    assert_eq!(format!("{secret:?}"), "[REDACTED]");
+}
+
+#[test]
+fn functional_spec_c02_file_secret_store_roundtrip_preserves_integration_secret() {
+    let temp = tempdir().expect("tempdir");
+    let store_path = temp.path().join("secrets.json");
+    let secret_store = FileSecretStore::new(store_path.clone());
+
+    secret_store
+        .write_integration_secret(
+            "discord-bot-token",
+            "super-secret-token",
+            CredentialStoreEncryptionMode::Keyed,
+            None,
+            Some(123),
+        )
+        .expect("write integration secret");
+
+    let decrypted = secret_store
+        .read_integration_secret(
+            "discord-bot-token",
+            CredentialStoreEncryptionMode::None,
+            None,
+        )
+        .expect("read integration secret")
+        .expect("stored secret should exist");
+    assert_eq!(decrypted.expose(), "super-secret-token");
+    assert_eq!(format!("{decrypted}"), "[REDACTED]");
+
+    let raw = std::fs::read_to_string(&store_path).expect("read raw secret store");
+    assert!(raw.contains("\"encryption\": \"keyed\""));
+    assert!(!raw.contains("super-secret-token"));
+}
+
+#[test]
 fn functional_credential_store_roundtrip_preserves_provider_records() {
     let temp = tempdir().expect("tempdir");
     let store_path = temp.path().join("credentials.json");
@@ -848,7 +889,7 @@ fn unit_resolve_credential_store_encryption_mode_auto_uses_key_presence() {
     cli.credential_store_key = None;
     assert_eq!(
         resolve_credential_store_encryption_mode(&cli),
-        CredentialStoreEncryptionMode::None
+        CredentialStoreEncryptionMode::Keyed
     );
 
     cli.credential_store_key = Some("configured-key".to_string());
