@@ -25,6 +25,8 @@ Execute production implementation slices from the Tau Ops Dashboard PRD by addin
 - Completed Task: #2685
 - Completed Story: #2687
 - Completed Task: #2688
+- Completed Story: #2690
+- Completed Task: #2691
 
 ## Deliverables
 - Completed (`#2667`):
@@ -72,9 +74,16 @@ Execute production implementation slices from the Tau Ops Dashboard PRD by addin
     - `PATCH /gateway/training/config`
   - Rollout pagination/fallback contracts and training config override persistence semantics.
   - Status discovery metadata for training rollouts/config endpoints.
+- Completed (`#2691`):
+  - Gateway tools inventory endpoint:
+    - `GET /gateway/tools`
+  - Gateway tools stats endpoint:
+    - `GET /gateway/tools/stats`
+  - Tool inventory discovery and telemetry-based per-tool stats aggregation contracts.
+  - Status discovery metadata for tools inventory/stats endpoints.
 
 ## Exit Criteria
 - Epic #2665 is closed with all scoped PRD phase-1 tasks completed.
-- `specs/2667/spec.md`, `specs/2670/spec.md`, `specs/2673/spec.md`, `specs/2676/spec.md`, `specs/2679/spec.md`, `specs/2682/spec.md`, `specs/2685/spec.md`, and `specs/2688/spec.md` status are `Implemented`.
+- `specs/2667/spec.md`, `specs/2670/spec.md`, `specs/2673/spec.md`, `specs/2676/spec.md`, `specs/2679/spec.md`, `specs/2682/spec.md`, `specs/2685/spec.md`, `specs/2688/spec.md`, and `specs/2691/spec.md` status are `Implemented`.
 - Scoped verification gates pass with evidence (`fmt`, `clippy -p tau-gateway`, targeted tests).
 - PRD checklist progress is updated for completed phase-1 endpoint slices.

@@ -66,6 +66,7 @@ mod safety_runtime;
 mod session_runtime;
 #[cfg(test)]
 mod tests;
+mod tools_runtime;
 mod training_runtime;
 mod types;
 mod webchat_page;
@@ -96,6 +97,7 @@ use session_runtime::{
     collect_assistant_reply, gateway_session_path, initialize_gateway_session_runtime,
     persist_messages, persist_session_usage_delta,
 };
+use tools_runtime::{handle_gateway_tools_inventory, handle_gateway_tools_stats};
 use training_runtime::{handle_gateway_training_config_patch, handle_gateway_training_rollouts};
 use types::{
     GatewayAuthSessionRequest, GatewayAuthSessionResponse, GatewayChannelLifecycleRequest,
@@ -139,6 +141,8 @@ const GATEWAY_AUDIT_LOG_ENDPOINT: &str = "/gateway/audit/log";
 const GATEWAY_TRAINING_STATUS_ENDPOINT: &str = "/gateway/training/status";
 const GATEWAY_TRAINING_ROLLOUTS_ENDPOINT: &str = "/gateway/training/rollouts";
 const GATEWAY_TRAINING_CONFIG_ENDPOINT: &str = "/gateway/training/config";
+const GATEWAY_TOOLS_ENDPOINT: &str = "/gateway/tools";
+const GATEWAY_TOOLS_STATS_ENDPOINT: &str = "/gateway/tools/stats";
 const GATEWAY_UI_TELEMETRY_ENDPOINT: &str = "/gateway/ui/telemetry";
 const DASHBOARD_HEALTH_ENDPOINT: &str = "/dashboard/health";
 const DASHBOARD_WIDGETS_ENDPOINT: &str = "/dashboard/widgets";
@@ -820,6 +824,11 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
             GATEWAY_TRAINING_CONFIG_ENDPOINT,
             patch(handle_gateway_training_config_patch),
         )
+        .route(GATEWAY_TOOLS_ENDPOINT, get(handle_gateway_tools_inventory))
+        .route(
+            GATEWAY_TOOLS_STATS_ENDPOINT,
+            get(handle_gateway_tools_stats),
+        )
         .route(
             GATEWAY_UI_TELEMETRY_ENDPOINT,
             post(handle_gateway_ui_telemetry),
@@ -937,6 +946,8 @@ async fn handle_gateway_status(
                     "training_status_endpoint": GATEWAY_TRAINING_STATUS_ENDPOINT,
                     "training_rollouts_endpoint": GATEWAY_TRAINING_ROLLOUTS_ENDPOINT,
                     "training_config_endpoint": GATEWAY_TRAINING_CONFIG_ENDPOINT,
+                    "tools_endpoint": GATEWAY_TOOLS_ENDPOINT,
+                    "tool_stats_endpoint": GATEWAY_TOOLS_STATS_ENDPOINT,
                     "ui_telemetry_endpoint": GATEWAY_UI_TELEMETRY_ENDPOINT,
                     "policy_gates": {
                         "session_write": SESSION_WRITE_POLICY_GATE,

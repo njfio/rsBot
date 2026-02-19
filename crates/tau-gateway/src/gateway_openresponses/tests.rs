@@ -4,7 +4,8 @@ use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
 use reqwest::Client;
 use serde_json::Value;
-use tau_ai::{ChatRequest, ChatResponse, ChatUsage, Message, TauAiError};
+use tau_agent_core::{AgentTool, ToolExecutionResult};
+use tau_ai::{ChatRequest, ChatResponse, ChatUsage, Message, TauAiError, ToolDefinition};
 use tempfile::tempdir;
 use tokio_tungstenite::{
     connect_async,
@@ -67,10 +68,51 @@ impl LlmClient for PanicGatewayLlmClient {
     }
 }
 
+#[derive(Clone, Copy)]
+struct FixtureInventoryTool {
+    name: &'static str,
+    description: &'static str,
+}
+
+#[async_trait]
+impl AgentTool for FixtureInventoryTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition {
+            name: self.name.to_string(),
+            description: self.description.to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {},
+            }),
+        }
+    }
+
+    async fn execute(&self, _arguments: Value) -> ToolExecutionResult {
+        ToolExecutionResult::ok(json!({"ok": true}))
+    }
+}
+
+#[derive(Clone, Default)]
+struct FixtureGatewayToolRegistrar;
+
+impl GatewayToolRegistrar for FixtureGatewayToolRegistrar {
+    fn register(&self, agent: &mut Agent) {
+        agent.register_tool(FixtureInventoryTool {
+            name: "memory_search",
+            description: "Searches memory entries.",
+        });
+        agent.register_tool(FixtureInventoryTool {
+            name: "bash",
+            description: "Runs shell commands.",
+        });
+    }
+}
+
 fn test_state_with_client_and_auth(
     root: &Path,
     max_input_chars: usize,
     client: Arc<dyn LlmClient>,
+    tool_registrar: Arc<dyn GatewayToolRegistrar>,
     auth_mode: GatewayOpenResponsesAuthMode,
     token: Option<&str>,
     password: Option<&str>,
@@ -86,7 +128,7 @@ fn test_state_with_client_and_auth(
             model_output_cost_per_million: Some(20.0),
             system_prompt: "You are Tau.".to_string(),
             max_turns: 4,
-            tool_registrar: Arc::new(NoopGatewayToolRegistrar),
+            tool_registrar,
             turn_timeout_ms: 0,
             session_lock_wait_ms: 500,
             session_lock_stale_ms: 10_000,
@@ -123,11 +165,30 @@ fn test_state_with_auth(
         root,
         max_input_chars,
         Arc::new(MockGatewayLlmClient::default()),
+        Arc::new(NoopGatewayToolRegistrar),
         auth_mode,
         token,
         password,
         rate_limit_window_seconds,
         rate_limit_max_requests,
+    )
+}
+
+fn test_state_with_fixture_tools(
+    root: &Path,
+    max_input_chars: usize,
+    token: &str,
+) -> Arc<GatewayOpenResponsesServerState> {
+    test_state_with_client_and_auth(
+        root,
+        max_input_chars,
+        Arc::new(MockGatewayLlmClient::default()),
+        Arc::new(FixtureGatewayToolRegistrar),
+        GatewayOpenResponsesAuthMode::Token,
+        Some(token),
+        None,
+        60,
+        120,
     )
 }
 
@@ -355,6 +416,22 @@ invalid-telemetry-line
         dashboard_root.join("actions-audit.jsonl"),
         telemetry_root.join("ui-telemetry.jsonl"),
     )
+}
+
+fn write_tools_telemetry_fixture(root: &Path) -> PathBuf {
+    let telemetry_root = root.join(".tau").join("gateway").join("openresponses");
+    std::fs::create_dir_all(&telemetry_root).expect("create telemetry root");
+    std::fs::write(
+        telemetry_root.join("ui-telemetry.jsonl"),
+        r#"{"timestamp_unix_ms":1000,"view":"tools","action":"invoke","reason_code":"tool_invoked","session_key":"s-tools-1","principal":"ops-user","metadata":{"tool_name":"bash"}}
+{"timestamp_unix_ms":1100,"view":"tools","action":"invoke","reason_code":"tool_invoked","session_key":"s-tools-1","principal":"ops-user","metadata":{"tool_name":"memory_search"}}
+invalid-tools-telemetry-line
+{"timestamp_unix_ms":1200,"view":"tools","action":"invoke","reason_code":"tool_invoked","session_key":"s-tools-2","principal":"ops-user","metadata":{"tool_name":"bash"}}
+{"timestamp_unix_ms":1300,"view":"memory","action":"search","reason_code":"memory_search_requested","session_key":"s-memory","principal":"ops-user","metadata":{"tool_name":"memory_search"}}
+"#,
+    )
+    .expect("write tools telemetry fixture");
+    telemetry_root.join("ui-telemetry.jsonl")
 }
 
 fn write_events_runtime_fixture(root: &Path) -> PathBuf {
@@ -2707,6 +2784,176 @@ async fn regression_spec_2688_c06_c07_training_endpoints_reject_invalid_or_unaut
 }
 
 #[tokio::test]
+async fn integration_spec_2691_c01_c02_c06_tools_inventory_and_stats_endpoints_return_deterministic_payloads(
+) {
+    let temp = tempdir().expect("tempdir");
+    write_tools_telemetry_fixture(temp.path());
+    let state = test_state_with_fixture_tools(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let tools_response = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/tools")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("tools inventory response");
+    assert_eq!(tools_response.status(), StatusCode::OK);
+    let tools_payload = tools_response
+        .json::<Value>()
+        .await
+        .expect("parse tools inventory payload");
+    assert_eq!(tools_payload["schema_version"], Value::Number(1_u64.into()));
+    assert_eq!(tools_payload["total_tools"], Value::Number(2_u64.into()));
+    assert_eq!(
+        tools_payload["tools"].as_array().map(Vec::len).unwrap_or(0),
+        2
+    );
+    assert_eq!(tools_payload["tools"][0]["name"].as_str(), Some("bash"));
+    assert_eq!(
+        tools_payload["tools"][1]["name"].as_str(),
+        Some("memory_search")
+    );
+
+    let stats_response = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/tools/stats")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("tools stats response");
+    assert_eq!(stats_response.status(), StatusCode::OK);
+    let stats_payload = stats_response
+        .json::<Value>()
+        .await
+        .expect("parse tools stats payload");
+    assert_eq!(stats_payload["total_tools"], Value::Number(2_u64.into()));
+    assert_eq!(stats_payload["total_events"], Value::Number(3_u64.into()));
+    assert_eq!(
+        stats_payload["invalid_records"],
+        Value::Number(1_u64.into())
+    );
+    assert_eq!(
+        stats_payload["stats"].as_array().map(Vec::len).unwrap_or(0),
+        2
+    );
+    assert_eq!(
+        stats_payload["stats"][0]["tool_name"].as_str(),
+        Some("bash")
+    );
+    assert_eq!(
+        stats_payload["stats"][0]["event_count"].as_u64(),
+        Some(2_u64)
+    );
+    assert_eq!(
+        stats_payload["stats"][1]["tool_name"].as_str(),
+        Some("memory_search")
+    );
+    assert_eq!(
+        stats_payload["stats"][1]["event_count"].as_u64(),
+        Some(1_u64)
+    );
+
+    let status_response = client
+        .get(format!("http://{addr}{GATEWAY_STATUS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("gateway status response");
+    assert_eq!(status_response.status(), StatusCode::OK);
+    let status_payload = status_response
+        .json::<Value>()
+        .await
+        .expect("parse gateway status payload");
+    assert_eq!(
+        status_payload["gateway"]["web_ui"]["tools_endpoint"],
+        "/gateway/tools"
+    );
+    assert_eq!(
+        status_payload["gateway"]["web_ui"]["tool_stats_endpoint"],
+        "/gateway/tools/stats"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2691_c03_c04_tools_stats_endpoint_returns_fallback_for_missing_or_malformed_artifacts(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state_with_fixture_tools(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let missing_stats = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/tools/stats")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("missing tools stats response");
+    assert_eq!(missing_stats.status(), StatusCode::OK);
+    let missing_payload = missing_stats
+        .json::<Value>()
+        .await
+        .expect("parse missing tools stats payload");
+    assert_eq!(missing_payload["total_events"], Value::Number(0_u64.into()));
+    assert_eq!(
+        missing_payload["invalid_records"],
+        Value::Number(0_u64.into())
+    );
+    assert!(missing_payload["diagnostics"]
+        .as_array()
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+
+    write_tools_telemetry_fixture(temp.path());
+    let malformed_stats = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/tools/stats")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("malformed tools stats response");
+    assert_eq!(malformed_stats.status(), StatusCode::OK);
+    let malformed_payload = malformed_stats
+        .json::<Value>()
+        .await
+        .expect("parse malformed tools stats payload");
+    assert_eq!(
+        malformed_payload["invalid_records"],
+        Value::Number(1_u64.into())
+    );
+    assert_eq!(
+        malformed_payload["total_events"],
+        Value::Number(3_u64.into())
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2691_c05_tools_endpoints_reject_unauthorized_requests() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state_with_fixture_tools(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let unauthorized_tools = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/tools")
+        .send()
+        .await
+        .expect("unauthorized tools inventory response");
+    assert_eq!(unauthorized_tools.status(), StatusCode::UNAUTHORIZED);
+
+    let unauthorized_stats = client
+        .get("http://".to_string() + &addr.to_string() + "/gateway/tools/stats")
+        .send()
+        .await
+        .expect("unauthorized tools stats response");
+    assert_eq!(unauthorized_stats.status(), StatusCode::UNAUTHORIZED);
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn regression_gateway_memory_graph_endpoint_rejects_unauthorized_requests() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 10_000, "secret");
@@ -3257,6 +3504,7 @@ async fn integration_spec_c02_openresponses_preflight_skips_provider_dispatch() 
         temp.path(),
         40,
         Arc::new(PanicGatewayLlmClient),
+        Arc::new(NoopGatewayToolRegistrar),
         GatewayOpenResponsesAuthMode::Token,
         Some("secret"),
         None,
