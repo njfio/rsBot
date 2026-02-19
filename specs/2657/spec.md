@@ -1,6 +1,6 @@
 # Spec: Issue #2657 - Encrypted API-key persistence via SecretStore (G20 phase 2)
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Tau currently supports encrypted credential-store records but still has API-key-at-rest pathways that can rely on plaintext profile/config fields. G20 phase 2 requires migrating persistence/retrieval behavior so stored API keys flow through encrypted secret-store handling by default.
