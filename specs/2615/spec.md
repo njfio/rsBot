@@ -1,6 +1,6 @@
 # Spec: Issue #2615 - Integrate RL loop with live agent decision-making path
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 Tau has rollout, trajectory, PPO, and GAE components, but live interactive agent decisions are not currently persisted into RL experience rollouts nor fed into scheduled PPO/GAE updates. This leaves the RL loop disconnected from production decision traces.
