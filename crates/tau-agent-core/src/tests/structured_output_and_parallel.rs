@@ -1428,6 +1428,320 @@ async fn regression_spec_2566_c05_emergency_tier_remains_hard_truncation_without
 }
 
 #[tokio::test]
+async fn spec_2579_c01_warn_tier_schedules_background_llm_compaction_without_immediate_truncation()
+{
+    let client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+            message: Message::assistant_text("preserve retry and idempotent write intent"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }])),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+
+    let mut agent = Agent::new(
+        client.clone(),
+        AgentConfig {
+            max_context_messages: Some(64),
+            max_estimated_input_tokens: Some(240),
+            context_compaction_warn_threshold_percent: 20,
+            context_compaction_aggressive_threshold_percent: 90,
+            context_compaction_emergency_threshold_percent: 95,
+            context_compaction_warn_retain_percent: 70,
+            context_compaction_aggressive_retain_percent: 50,
+            context_compaction_emergency_retain_percent: 50,
+            ..AgentConfig::default()
+        },
+    );
+    for index in 0..4 {
+        agent.append_message(Message::user(format!(
+            "warn llm schedule user message {index} with enough text to consume tokens"
+        )));
+        agent.append_message(Message::assistant_text(format!(
+            "warn llm schedule assistant message {index} with enough text to consume tokens"
+        )));
+    }
+    let expected_len = agent.messages().len();
+
+    let first = agent.request_messages().await;
+
+    assert_eq!(first.len(), expected_len);
+    assert!(
+        first
+            .iter()
+            .all(|message| !message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX)),
+        "warn-tier scheduling should remain non-blocking for first turn"
+    );
+
+    let mut saw_background_llm_request = false;
+    for _ in 0..20 {
+        if !client.requests.lock().await.is_empty() {
+            saw_background_llm_request = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        saw_background_llm_request,
+        "warn-tier background compaction should issue an LLM summary request"
+    );
+}
+
+#[tokio::test]
+async fn spec_2579_c02_warn_tier_applies_ready_llm_summary_compaction_on_subsequent_turn() {
+    let llm_summary = "retain billing retry policy and idempotent key strategy";
+    let client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+            message: Message::assistant_text(llm_summary),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }])),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+
+    let mut agent = Agent::new(
+        client,
+        AgentConfig {
+            max_context_messages: Some(64),
+            max_estimated_input_tokens: Some(240),
+            context_compaction_warn_threshold_percent: 20,
+            context_compaction_aggressive_threshold_percent: 90,
+            context_compaction_emergency_threshold_percent: 95,
+            context_compaction_warn_retain_percent: 70,
+            context_compaction_aggressive_retain_percent: 50,
+            context_compaction_emergency_retain_percent: 50,
+            ..AgentConfig::default()
+        },
+    );
+    for index in 0..4 {
+        agent.append_message(Message::user(format!(
+            "warn llm apply user message {index} with enough text to consume tokens"
+        )));
+        agent.append_message(Message::assistant_text(format!(
+            "warn llm apply assistant message {index} with enough text to consume tokens"
+        )));
+    }
+
+    let _ = agent.request_messages().await;
+    let mut maybe_summary = None;
+    for _ in 0..20 {
+        let candidate = agent.request_messages().await;
+        maybe_summary = candidate.iter().find_map(|message| {
+            (message.role == MessageRole::System
+                && message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX)
+                && message.text_content().contains("llm_brief:"))
+            .then(|| message.text_content().to_string())
+        });
+        if maybe_summary.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let summary = maybe_summary.expect("warn tier should apply llm-enriched summary once ready");
+    assert!(summary.contains("llm_brief:"));
+    assert!(summary.contains("idempotent key strategy"));
+}
+
+#[tokio::test]
+async fn spec_2579_c03_warn_llm_summary_includes_structured_context_prefix() {
+    let client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+            message: Message::assistant_text("keep checkout retry and fraud alert context"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }])),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+
+    let mut agent = Agent::new(
+        client,
+        AgentConfig {
+            max_context_messages: Some(64),
+            max_estimated_input_tokens: Some(240),
+            context_compaction_warn_threshold_percent: 20,
+            context_compaction_aggressive_threshold_percent: 90,
+            context_compaction_emergency_threshold_percent: 95,
+            context_compaction_warn_retain_percent: 70,
+            context_compaction_aggressive_retain_percent: 50,
+            context_compaction_emergency_retain_percent: 50,
+            ..AgentConfig::default()
+        },
+    );
+    for index in 0..4 {
+        agent.append_message(Message::user(format!(
+            "warn llm structure user message {index} with enough text to consume tokens"
+        )));
+        agent.append_message(Message::assistant_text(format!(
+            "warn llm structure assistant message {index} with enough text to consume tokens"
+        )));
+    }
+
+    let _ = agent.request_messages().await;
+    let mut maybe_summary = None;
+    for _ in 0..20 {
+        let candidate = agent.request_messages().await;
+        maybe_summary = candidate.iter().find_map(|message| {
+            (message.role == MessageRole::System
+                && message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX)
+                && message.text_content().contains("llm_brief:"))
+            .then(|| message.text_content().to_string())
+        });
+        if maybe_summary.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let summary = maybe_summary.expect("expected llm-enriched warn summary");
+    assert!(summary.starts_with(CONTEXT_SUMMARY_PREFIX));
+    assert!(summary.contains("\nllm_brief:"));
+    assert!(summary.contains("\nexcerpts:\n"));
+}
+
+#[tokio::test]
+async fn regression_spec_2579_c04_warn_llm_summary_failure_falls_back_to_deterministic_summary() {
+    let client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::new()),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+
+    let mut agent = Agent::new(
+        client.clone(),
+        AgentConfig {
+            max_context_messages: Some(64),
+            max_estimated_input_tokens: Some(240),
+            context_compaction_warn_threshold_percent: 20,
+            context_compaction_aggressive_threshold_percent: 90,
+            context_compaction_emergency_threshold_percent: 95,
+            context_compaction_warn_retain_percent: 70,
+            context_compaction_aggressive_retain_percent: 50,
+            context_compaction_emergency_retain_percent: 50,
+            ..AgentConfig::default()
+        },
+    );
+    for index in 0..4 {
+        agent.append_message(Message::user(format!(
+            "warn llm fallback user message {index} with enough text to consume tokens"
+        )));
+        agent.append_message(Message::assistant_text(format!(
+            "warn llm fallback assistant message {index} with enough text to consume tokens"
+        )));
+    }
+
+    let _ = agent.request_messages().await;
+    let mut maybe_summary = None;
+    for _ in 0..20 {
+        let candidate = agent.request_messages().await;
+        maybe_summary = candidate.iter().find_map(|message| {
+            (message.role == MessageRole::System
+                && message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX))
+            .then(|| message.text_content().to_string())
+        });
+        if maybe_summary.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    let summary = maybe_summary.expect("warn fallback summary should still be produced");
+    assert!(summary.starts_with(CONTEXT_SUMMARY_PREFIX));
+    assert!(
+        summary.contains("summarized_messages="),
+        "fallback should preserve deterministic summary format"
+    );
+    assert!(
+        !summary.contains("llm_brief:"),
+        "failed llm path should keep fallback summary without llm brief enrichment"
+    );
+    assert!(
+        !client.requests.lock().await.is_empty(),
+        "warn fallback path should still attempt background llm summary"
+    );
+}
+
+#[tokio::test]
+async fn regression_spec_2579_c05_aggressive_emergency_paths_remain_unchanged() {
+    let aggressive_client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+            message: Message::assistant_text("unused warn llm response"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }])),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+    let mut aggressive_agent = Agent::new(
+        aggressive_client.clone(),
+        AgentConfig {
+            max_context_messages: Some(64),
+            max_estimated_input_tokens: Some(220),
+            context_compaction_warn_threshold_percent: 20,
+            context_compaction_aggressive_threshold_percent: 35,
+            context_compaction_emergency_threshold_percent: 95,
+            context_compaction_warn_retain_percent: 70,
+            context_compaction_aggressive_retain_percent: 50,
+            context_compaction_emergency_retain_percent: 50,
+            ..AgentConfig::default()
+        },
+    );
+    for index in 0..4 {
+        aggressive_agent.append_message(Message::user(format!(
+            "aggressive unchanged user message {index} with enough text to consume tokens"
+        )));
+        aggressive_agent.append_message(Message::assistant_text(format!(
+            "aggressive unchanged assistant message {index} with enough text to consume tokens"
+        )));
+    }
+    let aggressive_compacted = aggressive_agent.request_messages().await;
+    assert!(aggressive_compacted
+        .iter()
+        .any(|message| message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX)));
+    assert!(
+        aggressive_client.requests.lock().await.is_empty(),
+        "aggressive path should not invoke warn-tier llm summary"
+    );
+
+    let emergency_client = Arc::new(CapturingMockClient {
+        responses: AsyncMutex::new(VecDeque::from([ChatResponse {
+            message: Message::assistant_text("unused warn llm response"),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        }])),
+        requests: AsyncMutex::new(Vec::new()),
+    });
+    let mut emergency_agent = Agent::new(
+        emergency_client.clone(),
+        AgentConfig {
+            max_context_messages: Some(64),
+            max_estimated_input_tokens: Some(100),
+            context_compaction_warn_threshold_percent: 20,
+            context_compaction_aggressive_threshold_percent: 35,
+            context_compaction_emergency_threshold_percent: 60,
+            context_compaction_warn_retain_percent: 70,
+            context_compaction_aggressive_retain_percent: 50,
+            context_compaction_emergency_retain_percent: 50,
+            ..AgentConfig::default()
+        },
+    );
+    for index in 0..4 {
+        emergency_agent.append_message(Message::user(format!(
+            "emergency unchanged user message {index} with enough text to consume tokens"
+        )));
+        emergency_agent.append_message(Message::assistant_text(format!(
+            "emergency unchanged assistant message {index} with enough text to consume tokens"
+        )));
+    }
+    let emergency_compacted = emergency_agent.request_messages().await;
+    assert!(emergency_compacted
+        .iter()
+        .all(|message| !message.text_content().starts_with(CONTEXT_SUMMARY_PREFIX)));
+    assert!(
+        emergency_client.requests.lock().await.is_empty(),
+        "emergency path should not invoke warn-tier llm summary"
+    );
+}
+
+#[tokio::test]
 async fn spec_2572_c01_warn_compaction_persists_compaction_entry() {
     let client = Arc::new(CapturingMockClient {
         responses: AsyncMutex::new(VecDeque::new()),
