@@ -1,6 +1,6 @@
 # Spec: Issue #2958 - Create operator deployment guide and validate commands end-to-end
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Tau has multiple operations runbooks, but there is no single operator deployment guide that covers
