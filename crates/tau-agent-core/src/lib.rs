@@ -26,12 +26,14 @@ pub use tau_safety::{
 };
 use thiserror::Error;
 
+mod cortex_runtime;
 mod process_types;
 mod runtime_safety_memory;
 mod runtime_startup;
 mod runtime_tool_bridge;
 mod runtime_turn_loop;
 
+pub use cortex_runtime::{Cortex, CortexConfig, CortexRefreshReport};
 pub use process_types::{
     ProcessLifecycleState, ProcessManager, ProcessManagerError, ProcessRuntimeProfile,
     ProcessSnapshot, ProcessSpawnSpec, ProcessType,
@@ -3353,4 +3355,7 @@ mod tests {
 
     #[path = "process_architecture.rs"]
     mod process_architecture;
+
+    #[path = "cortex_runtime.rs"]
+    mod cortex_runtime;
 }

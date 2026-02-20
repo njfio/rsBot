@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tau_agent_core::{
     default_safety_rule_set, scan_safety_rules, validate_safety_rule_set, Agent, AgentConfig,
-    AgentEvent, SafetyMode, SafetyPolicy, SafetyRuleSet,
+    AgentEvent, Cortex, CortexConfig, SafetyMode, SafetyPolicy, SafetyRuleSet,
 };
 use tau_ai::{LlmClient, Message, MessageRole, StreamDeltaHandler};
 use tau_core::{current_unix_timestamp, current_unix_timestamp_ms, write_text_atomic};
@@ -58,6 +58,7 @@ use crate::remote_profile::GatewayOpenResponsesAuthMode;
 
 mod audit_runtime;
 mod auth_runtime;
+mod cortex_bulletin_runtime;
 mod cortex_runtime;
 mod dashboard_status;
 mod deploy_runtime;
@@ -80,6 +81,7 @@ use auth_runtime::{
     authorize_gateway_request, collect_gateway_auth_status_report, enforce_gateway_rate_limit,
     issue_gateway_session_token,
 };
+use cortex_bulletin_runtime::start_cortex_bulletin_runtime;
 use cortex_runtime::{
     handle_cortex_chat, handle_cortex_status, record_cortex_external_followup_event,
     record_cortex_external_progress_event, record_cortex_external_session_closed,
@@ -266,6 +268,7 @@ struct GatewayOpenResponsesServerState {
     compat_runtime: Arc<Mutex<GatewayOpenAiCompatRuntimeState>>,
     ui_telemetry_runtime: Arc<Mutex<GatewayUiTelemetryRuntimeState>>,
     external_coding_agent_bridge: Arc<ExternalCodingAgentBridge>,
+    cortex: Arc<Cortex>,
 }
 
 impl GatewayOpenResponsesServerState {
@@ -273,6 +276,9 @@ impl GatewayOpenResponsesServerState {
         let external_coding_agent_bridge = Arc::new(ExternalCodingAgentBridge::new(
             config.external_coding_agent_bridge.clone(),
         ));
+        let cortex = Arc::new(Cortex::new(CortexConfig::new(gateway_memory_stores_root(
+            &config.state_dir,
+        ))));
         Self {
             config,
             response_sequence: Arc::new(AtomicU64::new(0)),
@@ -280,6 +286,7 @@ impl GatewayOpenResponsesServerState {
             compat_runtime: Arc::new(Mutex::new(GatewayOpenAiCompatRuntimeState::default())),
             ui_telemetry_runtime: Arc::new(Mutex::new(GatewayUiTelemetryRuntimeState::default())),
             external_coding_agent_bridge,
+            cortex,
         }
     }
 
@@ -293,6 +300,11 @@ impl GatewayOpenResponsesServerState {
 
     fn next_output_message_id(&self) -> String {
         format!("msg_{:016x}", self.next_sequence())
+    }
+
+    fn resolved_system_prompt(&self) -> String {
+        self.cortex
+            .compose_system_prompt(self.config.system_prompt.as_str())
     }
 
     fn record_openai_compat_request(&self, surface: GatewayOpenAiCompatSurface, stream: bool) {
@@ -742,12 +754,20 @@ pub async fn run_gateway_openresponses_server(
 
     let state_dir = config.state_dir.clone();
     let state = Arc::new(GatewayOpenResponsesServerState::new(config));
+    let mut cortex_bulletin_runtime = start_cortex_bulletin_runtime(
+        Arc::clone(&state.cortex),
+        state.config.client.clone(),
+        state.config.model.clone(),
+        state.config.runtime_heartbeat.enabled,
+        state.config.runtime_heartbeat.interval,
+    );
     let app = build_gateway_openresponses_router(state);
     let serve_result = axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })
         .await;
+    cortex_bulletin_runtime.shutdown().await;
     runtime_heartbeat_handle.shutdown().await;
     serve_result.context("gateway openresponses server exited unexpectedly")?;
 
@@ -2181,7 +2201,8 @@ async fn handle_gateway_session_append(
         state.config.session_lock_wait_ms,
         state.config.session_lock_stale_ms,
     );
-    if let Err(error) = store.ensure_initialized(&state.config.system_prompt) {
+    let resolved_system_prompt = state.resolved_system_prompt();
+    if let Err(error) = store.ensure_initialized(&resolved_system_prompt) {
         return OpenResponsesApiError::internal(format!(
             "failed to initialize session '{}': {error}",
             session_path.display()
@@ -3436,14 +3457,15 @@ fn gateway_memory_path(state_dir: &Path, session_key: &str) -> PathBuf {
 }
 
 fn gateway_memory_store_root(state_dir: &Path, session_key: &str) -> PathBuf {
-    state_dir
-        .join("openresponses")
-        .join("memory-store")
-        .join(session_key)
+    gateway_memory_stores_root(state_dir).join(session_key)
 }
 
 fn gateway_memory_store(state_dir: &Path, session_key: &str) -> FileMemoryStore {
     FileMemoryStore::new(gateway_memory_store_root(state_dir, session_key))
+}
+
+fn gateway_memory_stores_root(state_dir: &Path) -> PathBuf {
+    state_dir.join("openresponses").join("memory-store")
 }
 
 fn normalize_optional_text(raw: Option<String>) -> Option<String> {
@@ -3858,6 +3880,7 @@ async fn execute_openresponses_request(
     }
 
     let preflight_input_tokens = derive_gateway_preflight_token_limit(state.config.max_input_chars);
+    let resolved_system_prompt = state.resolved_system_prompt();
     let mut agent = Agent::new(
         state.config.client.clone(),
         AgentConfig {
@@ -3865,7 +3888,7 @@ async fn execute_openresponses_request(
             model_input_cost_per_million: state.config.model_input_cost_per_million,
             model_cached_input_cost_per_million: state.config.model_cached_input_cost_per_million,
             model_output_cost_per_million: state.config.model_output_cost_per_million,
-            system_prompt: state.config.system_prompt.clone(),
+            system_prompt: resolved_system_prompt.clone(),
             max_turns: state.config.max_turns,
             temperature: Some(0.0),
             max_tokens: None,
@@ -3900,7 +3923,7 @@ async fn execute_openresponses_request(
     let mut session_runtime = Some(
         initialize_gateway_session_runtime(
             &session_path,
-            &state.config.system_prompt,
+            &resolved_system_prompt,
             state.config.session_lock_wait_ms,
             state.config.session_lock_stale_ms,
             &mut agent,

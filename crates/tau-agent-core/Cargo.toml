@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+arc-swap.workspace = true
 jsonschema.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
@@ -17,3 +18,4 @@ tau-safety = { path = "../tau-safety" }
 
 [dev-dependencies]
 httpmock = "0.8"
+tempfile = "3"

@@ -3968,6 +3968,7 @@ dependencies = [
 name = "tau-agent-core"
 version = "0.1.0"
 dependencies = [
+ "arc-swap",
  "async-trait",
  "httpmock",
  "jsonschema",
@@ -3976,6 +3977,7 @@ dependencies = [
  "tau-ai",
  "tau-memory",
  "tau-safety",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
 ]
