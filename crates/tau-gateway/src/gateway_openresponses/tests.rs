@@ -1314,6 +1314,79 @@ async fn integration_spec_2830_c02_c03_ops_chat_send_appends_message_and_renders
 }
 
 #[tokio::test]
+async fn functional_spec_2862_c01_c02_c03_ops_chat_shell_exposes_token_counter_marker_contract() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/chat?theme=light&sidebar=collapsed&session=chat-c01"
+        ))
+        .send()
+        .await
+        .expect("ops chat request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops chat body");
+
+    assert!(body.contains(
+        "id=\"tau-ops-chat-panel\" data-route=\"/ops/chat\" aria-hidden=\"false\" data-active-session-key=\"chat-c01\" data-panel-visible=\"true\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-chat-token-counter\" data-session-key=\"chat-c01\" data-input-tokens=\"0\" data-output-tokens=\"0\" data-total-tokens=\"0\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_spec_2862_c04_ops_and_sessions_routes_preserve_hidden_chat_token_counter_marker(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let ops_response = client
+        .get(format!(
+            "http://{addr}/ops?theme=dark&sidebar=expanded&session=chat-c01"
+        ))
+        .send()
+        .await
+        .expect("ops shell request");
+    assert_eq!(ops_response.status(), StatusCode::OK);
+    let ops_body = ops_response.text().await.expect("read ops shell body");
+    assert!(ops_body.contains(
+        "id=\"tau-ops-chat-panel\" data-route=\"/ops/chat\" aria-hidden=\"true\" data-active-session-key=\"chat-c01\" data-panel-visible=\"false\""
+    ));
+    assert!(ops_body.contains(
+        "id=\"tau-ops-chat-token-counter\" data-session-key=\"chat-c01\" data-input-tokens=\"0\" data-output-tokens=\"0\" data-total-tokens=\"0\""
+    ));
+
+    let sessions_response = client
+        .get(format!(
+            "http://{addr}/ops/sessions?theme=dark&sidebar=expanded&session=chat-c01"
+        ))
+        .send()
+        .await
+        .expect("ops sessions shell request");
+    assert_eq!(sessions_response.status(), StatusCode::OK);
+    let sessions_body = sessions_response
+        .text()
+        .await
+        .expect("read ops sessions shell body");
+    assert!(sessions_body.contains(
+        "id=\"tau-ops-chat-panel\" data-route=\"/ops/chat\" aria-hidden=\"true\" data-active-session-key=\"chat-c01\" data-panel-visible=\"false\""
+    ));
+    assert!(sessions_body.contains(
+        "id=\"tau-ops-chat-token-counter\" data-session-key=\"chat-c01\" data-input-tokens=\"0\" data-output-tokens=\"0\" data-total-tokens=\"0\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2834_c01_ops_chat_shell_exposes_session_selector_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");

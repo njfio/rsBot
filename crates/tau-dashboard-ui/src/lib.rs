@@ -948,6 +948,15 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                     })
                                     .collect_view()}
                             </ul>
+                            <article
+                                id="tau-ops-chat-token-counter"
+                                data-session-key=chat_session_key.clone()
+                                data-input-tokens=session_detail_usage_input_tokens.clone()
+                                data-output-tokens=session_detail_usage_output_tokens.clone()
+                                data-total-tokens=session_detail_usage_total_tokens.clone()
+                            >
+                                Token Counter
+                            </article>
                         </section>
                         <section
                             id="tau-ops-sessions-panel"
@@ -1553,6 +1562,81 @@ mod tests {
         assert!(html.contains("id=\"tau-ops-chat-message-row-1\" data-message-role=\"assistant\""));
         assert!(html.contains("first message"));
         assert!(html.contains("second message"));
+    }
+
+    #[test]
+    fn functional_spec_2862_c01_c02_c03_chat_route_renders_token_counter_marker_contract() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Chat,
+            theme: TauOpsDashboardTheme::Light,
+            sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot {
+                active_session_key: "session-usage".to_string(),
+                send_form_action: "/ops/chat/send".to_string(),
+                send_form_method: "post".to_string(),
+                session_options: vec![],
+                message_rows: vec![],
+                session_detail_usage_input_tokens: 13,
+                session_detail_usage_output_tokens: 21,
+                session_detail_usage_total_tokens: 34,
+                ..TauOpsDashboardChatSnapshot::default()
+            },
+        });
+
+        assert!(html.contains(
+            "id=\"tau-ops-chat-panel\" data-route=\"/ops/chat\" aria-hidden=\"false\" data-active-session-key=\"session-usage\" data-panel-visible=\"true\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-chat-token-counter\" data-session-key=\"session-usage\" data-input-tokens=\"13\" data-output-tokens=\"21\" data-total-tokens=\"34\""
+        ));
+    }
+
+    #[test]
+    fn regression_spec_2862_c04_non_chat_routes_keep_hidden_chat_token_counter_marker_contract() {
+        let ops_html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Ops,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot {
+                active_session_key: "chat-c01".to_string(),
+                session_detail_usage_input_tokens: 0,
+                session_detail_usage_output_tokens: 0,
+                session_detail_usage_total_tokens: 0,
+                ..TauOpsDashboardChatSnapshot::default()
+            },
+        });
+        assert!(ops_html.contains(
+            "id=\"tau-ops-chat-panel\" data-route=\"/ops/chat\" aria-hidden=\"true\" data-active-session-key=\"chat-c01\" data-panel-visible=\"false\""
+        ));
+        assert!(ops_html.contains(
+            "id=\"tau-ops-chat-token-counter\" data-session-key=\"chat-c01\" data-input-tokens=\"0\" data-output-tokens=\"0\" data-total-tokens=\"0\""
+        ));
+
+        let sessions_html =
+            render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+                auth_mode: TauOpsDashboardAuthMode::Token,
+                active_route: TauOpsDashboardRoute::Sessions,
+                theme: TauOpsDashboardTheme::Dark,
+                sidebar_state: TauOpsDashboardSidebarState::Expanded,
+                command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+                chat: TauOpsDashboardChatSnapshot {
+                    active_session_key: "chat-c01".to_string(),
+                    session_detail_usage_input_tokens: 0,
+                    session_detail_usage_output_tokens: 0,
+                    session_detail_usage_total_tokens: 0,
+                    ..TauOpsDashboardChatSnapshot::default()
+                },
+            });
+        assert!(sessions_html.contains(
+            "id=\"tau-ops-chat-panel\" data-route=\"/ops/chat\" aria-hidden=\"true\" data-active-session-key=\"chat-c01\" data-panel-visible=\"false\""
+        ));
+        assert!(sessions_html.contains(
+            "id=\"tau-ops-chat-token-counter\" data-session-key=\"chat-c01\" data-input-tokens=\"0\" data-output-tokens=\"0\" data-total-tokens=\"0\""
+        ));
     }
 
     #[test]
