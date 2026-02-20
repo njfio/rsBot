@@ -85,7 +85,7 @@ minijinja = "2.12"
 leptos = { version = "0.8", default-features = false, features = ["ssr"] }
 notify = "7.0"
 arc-swap = "1.7"
-toml = "0.8"
+toml = "0.9"
 sha2 = "0.10"
 wait-timeout = "0.2"
 yrs = "0.25"
