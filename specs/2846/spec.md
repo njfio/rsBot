@@ -1,6 +1,6 @@
 # Spec: Issue #2846 - /ops/sessions/{session_key} session graph node/edge contracts
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Tau Ops now exposes deterministic session detail timeline/validation/usage contracts at `/ops/sessions/{session_key}`, but does not expose deterministic session graph contracts from lineage parent links. Operators cannot verify graph node and edge composition directly from SSR markers.
