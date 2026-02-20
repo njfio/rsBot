@@ -804,6 +804,14 @@ impl Drop for BranchRunSlotGuard {
     }
 }
 
+#[derive(Debug, Clone)]
+struct BranchWorkerFollowupReport {
+    conclusion: String,
+    available_tools: Vec<String>,
+    branch_message_count: usize,
+    runtime_profile: ProcessRuntimeProfile,
+}
+
 /// Public struct `Agent` used across Tau components.
 ///
 /// # Examples
@@ -854,6 +862,7 @@ pub struct Agent {
     skip_response_reason: Option<String>,
     warn_compaction_state: Arc<Mutex<WarnCompactionState>>,
     active_branch_runs: Arc<AtomicUsize>,
+    process_run_counter: Arc<AtomicUsize>,
 }
 
 impl Agent {
@@ -888,6 +897,7 @@ impl Agent {
             skip_response_reason: None,
             warn_compaction_state: Arc::new(Mutex::new(WarnCompactionState::default())),
             active_branch_runs: Arc::new(AtomicUsize::new(0)),
+            process_run_counter: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -1904,6 +1914,43 @@ impl Agent {
         })
     }
 
+    fn apply_process_runtime_profile(&mut self, profile: &ProcessRuntimeProfile) {
+        self.config.max_turns = profile.max_turns;
+        self.config.max_context_messages = profile.max_context_messages;
+        self.config.system_prompt = profile.system_prompt.clone();
+        self.replace_system_prompt(profile.system_prompt.clone());
+        let allowlist = profile
+            .tool_allowlist
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        self.tools
+            .retain(|tool_name, _| allowlist.contains(tool_name.as_str()));
+    }
+
+    fn next_process_id(&self, process_type: ProcessType) -> String {
+        let sequence = self
+            .process_run_counter
+            .fetch_add(1, Ordering::AcqRel)
+            .saturating_add(1);
+        format!(
+            "{}::{}-{}",
+            self.agent_id(),
+            process_type.as_str(),
+            sequence
+        )
+    }
+
+    fn process_state_label(state: ProcessLifecycleState) -> &'static str {
+        match state {
+            ProcessLifecycleState::Pending => "pending",
+            ProcessLifecycleState::Running => "running",
+            ProcessLifecycleState::Completed => "completed",
+            ProcessLifecycleState::Failed => "failed",
+            ProcessLifecycleState::Cancelled => "cancelled",
+        }
+    }
+
     async fn execute_branch_followup(
         &self,
         call: &ToolCall,
@@ -1916,34 +1963,164 @@ impl Agent {
                 "branch call arguments must include non-empty prompt".to_string(),
             );
         };
+        let channel_process_id = format!("{}::channel", self.agent_id());
+        let branch_process_id = self.next_process_id(ProcessType::Branch);
+        let worker_process_id = self.next_process_id(ProcessType::Worker);
+        let worker_profile = ProcessRuntimeProfile::for_type(ProcessType::Worker);
+        let process_manager = ProcessManager::default();
 
-        let mut branch_agent = self.fork();
-        branch_agent.set_agent_id(format!("{}::branch", self.agent_id()));
-        branch_agent.skip_response_reason = None;
-        branch_agent.clear_tool_result_cache();
-        branch_agent
-            .tools
-            .retain(|tool_name, _| tool_name.starts_with("memory_"));
+        let mut worker_agent = self.fork();
+        worker_agent.set_agent_id(worker_process_id.clone());
+        worker_agent.skip_response_reason = None;
+        worker_agent.clear_tool_result_cache();
+        worker_agent.apply_process_runtime_profile(&worker_profile);
+        let worker_execution = {
+            let available_tools = worker_agent.registered_tool_names();
+            let branch_messages = match Box::pin(worker_agent.prompt(prompt.clone())).await {
+                Ok(messages) => messages,
+                Err(error) => {
+                    let error = format!("branch follow-up execution failed: {error}");
+                    let worker_handle = process_manager.spawn_supervised(
+                        ProcessSpawnSpec::new(worker_process_id.clone(), ProcessType::Worker)
+                            .with_parent_process_id(branch_process_id.clone())
+                            .with_session_key(self.agent_id().to_string())
+                            .with_runtime_profile(worker_profile.clone()),
+                        move |_spec| async move { Err(error) },
+                    );
+                    if let Ok(handle) = worker_handle {
+                        let _ = handle.await;
+                    }
+                    return Self::branch_result_with_error(
+                        &result,
+                        BRANCH_REASON_CODE_EXECUTION_FAILED,
+                        "branch follow-up execution failed".to_string(),
+                    );
+                }
+            };
+            let Some(conclusion) = Self::branch_followup_assistant_conclusion(&branch_messages)
+            else {
+                let worker_handle = process_manager.spawn_supervised(
+                    ProcessSpawnSpec::new(worker_process_id.clone(), ProcessType::Worker)
+                        .with_parent_process_id(branch_process_id.clone())
+                        .with_session_key(self.agent_id().to_string())
+                        .with_runtime_profile(worker_profile.clone()),
+                    move |_spec| async move {
+                        Err("branch follow-up produced no assistant conclusion".to_string())
+                    },
+                );
+                if let Ok(handle) = worker_handle {
+                    let _ = handle.await;
+                }
+                return Self::branch_result_with_error(
+                    &result,
+                    BRANCH_REASON_CODE_EXECUTION_FAILED,
+                    "branch follow-up produced no assistant conclusion".to_string(),
+                );
+            };
+            let report = BranchWorkerFollowupReport {
+                conclusion,
+                available_tools,
+                branch_message_count: branch_messages.len(),
+                runtime_profile: worker_profile.clone(),
+            };
+            let worker_handle = process_manager.spawn_supervised(
+                ProcessSpawnSpec::new(worker_process_id.clone(), ProcessType::Worker)
+                    .with_parent_process_id(branch_process_id.clone())
+                    .with_session_key(self.agent_id().to_string())
+                    .with_runtime_profile(worker_profile.clone()),
+                move |_spec| async move { Ok(()) },
+            );
+            if let Ok(handle) = worker_handle {
+                let _ = handle.await;
+            }
+            Ok(report)
+        };
 
-        let available_tools = branch_agent.registered_tool_names();
-        let branch_messages = match Box::pin(branch_agent.prompt(prompt)).await {
-            Ok(messages) => messages,
+        let branch_runner_error = worker_execution.as_ref().err().cloned();
+        let branch_outcome = process_manager.spawn_supervised(
+            ProcessSpawnSpec::new(branch_process_id.clone(), ProcessType::Branch)
+                .with_parent_process_id(channel_process_id.clone())
+                .with_session_key(self.agent_id().to_string())
+                .with_runtime_profile(ProcessRuntimeProfile::for_type(ProcessType::Branch)),
+            move |_spec| async move {
+                if let Some(error) = branch_runner_error {
+                    Err(error)
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        let branch_handle = match branch_outcome {
+            Ok(handle) => handle,
             Err(error) => {
                 return Self::branch_result_with_error(
                     &result,
                     BRANCH_REASON_CODE_EXECUTION_FAILED,
-                    format!("branch follow-up execution failed: {error}"),
+                    format!("failed to spawn branch process: {error}"),
                 );
             }
         };
-
-        let Some(branch_conclusion) = Self::branch_followup_assistant_conclusion(&branch_messages)
-        else {
+        if let Err(error) = branch_handle.await {
             return Self::branch_result_with_error(
                 &result,
                 BRANCH_REASON_CODE_EXECUTION_FAILED,
-                "branch follow-up produced no assistant conclusion".to_string(),
+                format!("branch process join failed: {error}"),
             );
+        }
+
+        let branch_snapshot = process_manager.snapshot(branch_process_id.as_str());
+        let worker_snapshot = process_manager.snapshot(worker_process_id.as_str());
+        let branch_parent_process_id = branch_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.parent_process_id.clone())
+            .unwrap_or_else(|| channel_process_id.clone());
+        let worker_parent_process_id = worker_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.parent_process_id.clone())
+            .unwrap_or_else(|| branch_process_id.clone());
+
+        let branch_state_value = branch_snapshot
+            .as_ref()
+            .map(|snapshot| Self::process_state_label(snapshot.state).to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let worker_state_value = worker_snapshot
+            .as_ref()
+            .map(|snapshot| Self::process_state_label(snapshot.state).to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        let process_delegation = json!({
+            "channel": {
+                "process_id": channel_process_id,
+                "process_type": ProcessType::Channel.as_str(),
+                "state": "running",
+                "parent_process_id": serde_json::Value::Null,
+            },
+            "branch": {
+                "process_id": branch_process_id,
+                "process_type": ProcessType::Branch.as_str(),
+                "state": branch_state_value,
+                "parent_process_id": branch_parent_process_id,
+            },
+            "worker": {
+                "process_id": worker_process_id,
+                "process_type": ProcessType::Worker.as_str(),
+                "state": worker_state_value,
+                "parent_process_id": worker_parent_process_id,
+            },
+        });
+
+        let worker_outcome_value = match worker_execution {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let mut failed = Self::branch_result_with_error(
+                    &result,
+                    BRANCH_REASON_CODE_EXECUTION_FAILED,
+                    error,
+                );
+                if let Value::Object(payload) = &mut failed.content {
+                    payload.insert("process_delegation".to_string(), process_delegation);
+                }
+                return failed;
+            }
         };
 
         let mut payload = Self::branch_result_payload_base(&result);
@@ -1963,15 +2140,22 @@ impl Agent {
         );
         payload.insert(
             "branch_conclusion".to_string(),
-            Value::String(branch_conclusion),
+            Value::String(worker_outcome_value.conclusion),
         );
+        payload.insert("process_delegation".to_string(), process_delegation);
         payload.insert(
             "branch_followup".to_string(),
             json!({
                 "status": "completed",
                 "tools_mode": "memory_only",
-                "available_tools": available_tools,
-                "branch_message_count": branch_messages.len(),
+                "available_tools": worker_outcome_value.available_tools,
+                "branch_message_count": worker_outcome_value.branch_message_count,
+                "worker_runtime_profile": {
+                    "process_type": worker_outcome_value.runtime_profile.process_type.as_str(),
+                    "max_turns": worker_outcome_value.runtime_profile.max_turns,
+                    "max_context_messages": worker_outcome_value.runtime_profile.max_context_messages,
+                    "tool_allowlist": worker_outcome_value.runtime_profile.tool_allowlist,
+                },
             }),
         );
         ToolExecutionResult::ok(Value::Object(payload))

@@ -49,6 +49,7 @@ impl ProcessRuntimeProfile {
                 max_context_messages: Some(256),
                 tool_allowlist: vec![
                     "branch".to_string(),
+                    "worker".to_string(),
                     "memory_search".to_string(),
                     "memory_write".to_string(),
                     "react".to_string(),

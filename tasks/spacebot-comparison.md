@@ -212,12 +212,12 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **What**: Spacebot's 5-process model (channel, branch, worker, compactor, cortex) vs Tau's single turn loop.
 **Why it matters**: True multi-user support. One user's complex request doesn't block another user's simple question.
 **Pathway**:
-- [ ] Design a `ProcessType` enum: `Channel`, `Branch`, `Worker`, `Compactor`, `Cortex`
-- [ ] Refactor `tau-agent-core` turn loop to support concurrent process instances
-- [ ] Add `ProcessManager` that spawns/supervises process lifecycles
-- [ ] Each process gets its own system prompt, tool set, and context window
-- [ ] Channel process delegates to branches/workers via tool calls
-- [ ] Worker process runs in isolated tokio task with 25-turn segments
+- [x] Design a `ProcessType` enum: `Channel`, `Branch`, `Worker`, `Compactor`, `Cortex`
+- [x] Refactor `tau-agent-core` turn loop to support concurrent process instances
+- [x] Add `ProcessManager` that spawns/supervises process lifecycles
+- [x] Each process gets its own system prompt, tool set, and context window
+- [x] Channel process delegates to branches/workers via tool calls
+- [x] Worker process runs in isolated tokio task with 25-turn segments
 - **Files**: `tau-agent-core/src/lib.rs`, new `tau-agent-core/src/process_types/` module
 - **Effort**: Large — this is an architectural change to the core agent loop
 

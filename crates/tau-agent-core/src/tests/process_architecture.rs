@@ -25,6 +25,15 @@ fn unit_process_runtime_profile_defaults_are_role_specific() {
     assert_eq!(cortex.max_context_messages, Some(192));
 }
 
+#[test]
+fn regression_spec_2721_c04_channel_runtime_profile_exposes_worker_delegation_tool() {
+    let channel = ProcessRuntimeProfile::for_type(ProcessType::Channel);
+    assert!(
+        channel.tool_allowlist.contains(&"worker".to_string()),
+        "channel profile must include worker delegation capability"
+    );
+}
+
 #[tokio::test]
 async fn functional_process_manager_supervises_running_and_terminal_states() {
     let manager = ProcessManager::default();
