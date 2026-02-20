@@ -287,6 +287,9 @@ pub struct TauOpsDashboardChatSnapshot {
     pub memory_search_form_action: String,
     pub memory_search_form_method: String,
     pub memory_search_query: String,
+    pub memory_search_workspace_id: String,
+    pub memory_search_channel_id: String,
+    pub memory_search_actor_id: String,
     pub memory_search_rows: Vec<TauOpsDashboardMemorySearchRow>,
 }
 
@@ -324,6 +327,9 @@ impl Default for TauOpsDashboardChatSnapshot {
             memory_search_form_action: "/ops/memory".to_string(),
             memory_search_form_method: "get".to_string(),
             memory_search_query: String::new(),
+            memory_search_workspace_id: String::new(),
+            memory_search_channel_id: String::new(),
+            memory_search_actor_id: String::new(),
             memory_search_rows: vec![],
         }
     }
@@ -627,10 +633,19 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     let memory_search_form_action = context.chat.memory_search_form_action.clone();
     let memory_search_form_method = context.chat.memory_search_form_method.clone();
     let memory_search_query = context.chat.memory_search_query.clone();
+    let memory_search_workspace_id = context.chat.memory_search_workspace_id.clone();
+    let memory_search_channel_id = context.chat.memory_search_channel_id.clone();
+    let memory_search_actor_id = context.chat.memory_search_actor_id.clone();
     let memory_search_rows = context.chat.memory_search_rows.clone();
     let memory_result_count_value = memory_search_rows.len().to_string();
     let memory_query_panel_attr = memory_search_query.clone();
     let memory_query_input_value = memory_search_query.clone();
+    let memory_workspace_id_panel_attr = memory_search_workspace_id.clone();
+    let memory_channel_id_panel_attr = memory_search_channel_id.clone();
+    let memory_actor_id_panel_attr = memory_search_actor_id.clone();
+    let memory_workspace_id_input_value = memory_search_workspace_id.clone();
+    let memory_channel_id_input_value = memory_search_channel_id.clone();
+    let memory_actor_id_input_value = memory_search_actor_id.clone();
     let memory_result_count_panel_attr = memory_result_count_value.clone();
     let memory_result_count_list_attr = memory_result_count_value.clone();
     let memory_results_view = if memory_search_rows.is_empty() {
@@ -1414,6 +1429,9 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                             data-panel-visible=memory_panel_visible
                             data-query=memory_query_panel_attr
                             data-result-count=memory_result_count_panel_attr
+                            data-workspace-id=memory_workspace_id_panel_attr
+                            data-channel-id=memory_channel_id_panel_attr
+                            data-actor-id=memory_actor_id_panel_attr
                         >
                             <h2>Memory Explorer</h2>
                             <form
@@ -1440,6 +1458,27 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                     type="search"
                                     name="query"
                                     value=memory_query_input_value
+                                />
+                                <label for="tau-ops-memory-workspace-filter">Workspace</label>
+                                <input
+                                    id="tau-ops-memory-workspace-filter"
+                                    type="text"
+                                    name="workspace_id"
+                                    value=memory_workspace_id_input_value
+                                />
+                                <label for="tau-ops-memory-channel-filter">Channel</label>
+                                <input
+                                    id="tau-ops-memory-channel-filter"
+                                    type="text"
+                                    name="channel_id"
+                                    value=memory_channel_id_input_value
+                                />
+                                <label for="tau-ops-memory-actor-filter">Actor</label>
+                                <input
+                                    id="tau-ops-memory-actor-filter"
+                                    type="text"
+                                    name="actor_id"
+                                    value=memory_actor_id_input_value
                                 />
                                 <button id="tau-ops-memory-search-button" type="submit">
                                     Search
@@ -2513,6 +2552,28 @@ mod tests {
         );
         assert!(html.contains("id=\"tau-ops-memory-results\" data-result-count=\"0\""));
         assert!(html.contains("id=\"tau-ops-memory-empty-state\" data-empty-state=\"true\""));
+    }
+
+    #[test]
+    fn functional_spec_2909_c01_c03_memory_route_renders_scope_filter_controls() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Memory,
+            theme: TauOpsDashboardTheme::Light,
+            sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot::default(),
+        });
+
+        assert!(html.contains(
+            "id=\"tau-ops-memory-workspace-filter\" type=\"text\" name=\"workspace_id\" value=\"\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-memory-channel-filter\" type=\"text\" name=\"channel_id\" value=\"\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-memory-actor-filter\" type=\"text\" name=\"actor_id\" value=\"\""
+        ));
     }
 
     #[test]

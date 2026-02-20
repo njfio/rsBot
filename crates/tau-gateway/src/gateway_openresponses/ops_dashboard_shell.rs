@@ -346,15 +346,21 @@ fn collect_tau_ops_dashboard_chat_snapshot(
         .requested_memory_query()
         .map(str::to_string)
         .unwrap_or_default();
+    let memory_search_workspace_id = controls.requested_memory_workspace_id().unwrap_or_default();
+    let memory_search_channel_id = controls.requested_memory_channel_id().unwrap_or_default();
+    let memory_search_actor_id = controls.requested_memory_actor_id().unwrap_or_default();
     let mut memory_search_rows = Vec::new();
 
     if !memory_search_query.trim().is_empty() {
         let search_options = MemorySearchOptions {
             limit: controls.requested_memory_limit(),
             scope: MemoryScopeFilter {
-                workspace_id: controls.requested_memory_workspace_id(),
-                channel_id: controls.requested_memory_channel_id(),
-                actor_id: controls.requested_memory_actor_id(),
+                workspace_id: (!memory_search_workspace_id.is_empty())
+                    .then_some(memory_search_workspace_id.clone()),
+                channel_id: (!memory_search_channel_id.is_empty())
+                    .then_some(memory_search_channel_id.clone()),
+                actor_id: (!memory_search_actor_id.is_empty())
+                    .then_some(memory_search_actor_id.clone()),
             },
             ..MemorySearchOptions::default()
         };
@@ -444,6 +450,9 @@ fn collect_tau_ops_dashboard_chat_snapshot(
         memory_search_form_action: "/ops/memory".to_string(),
         memory_search_form_method: "get".to_string(),
         memory_search_query,
+        memory_search_workspace_id,
+        memory_search_channel_id,
+        memory_search_actor_id,
         memory_search_rows,
     }
 }

@@ -1233,6 +1233,110 @@ async fn integration_spec_2905_c01_c02_c03_ops_memory_route_renders_relevant_sea
 }
 
 #[tokio::test]
+async fn integration_spec_2909_c01_c02_c03_ops_memory_scope_filters_narrow_results() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state.clone())
+        .await
+        .expect("spawn server");
+    let client = Client::new();
+
+    let session_key = "ops-memory-scope-filter";
+    let fixtures = [
+        (
+            "mem-scope-target",
+            "workspace-a",
+            "channel-alpha",
+            "operator",
+        ),
+        (
+            "mem-scope-workspace-miss",
+            "workspace-b",
+            "channel-alpha",
+            "operator",
+        ),
+        (
+            "mem-scope-channel-miss",
+            "workspace-a",
+            "channel-beta",
+            "operator",
+        ),
+        (
+            "mem-scope-actor-miss",
+            "workspace-a",
+            "channel-alpha",
+            "observer",
+        ),
+    ];
+
+    for (memory_id, workspace_id, channel_id, actor_id) in fixtures {
+        let entry_endpoint =
+            expand_memory_entry_template(GATEWAY_MEMORY_ENTRY_ENDPOINT, session_key, memory_id);
+        let create = client
+            .put(format!("http://{addr}{entry_endpoint}"))
+            .bearer_auth("secret")
+            .json(&json!({
+                "summary": "ScopeToken",
+                "memory_type": "fact",
+                "workspace_id": workspace_id,
+                "channel_id": channel_id,
+                "actor_id": actor_id,
+                "policy_gate": MEMORY_WRITE_POLICY_GATE
+            }))
+            .send()
+            .await
+            .expect("create scope fixture entry");
+        assert_eq!(create.status(), StatusCode::CREATED);
+    }
+
+    let scoped_response = client
+        .get(format!(
+            "http://{addr}/ops/memory?theme=light&sidebar=collapsed&session={session_key}&query=ScopeToken&workspace_id=workspace-a&channel_id=channel-alpha&actor_id=operator&limit=25"
+        ))
+        .send()
+        .await
+        .expect("ops memory scoped request");
+    assert_eq!(scoped_response.status(), StatusCode::OK);
+    let scoped_body = scoped_response
+        .text()
+        .await
+        .expect("read scoped response body");
+    assert!(scoped_body.contains(
+        "id=\"tau-ops-memory-workspace-filter\" type=\"text\" name=\"workspace_id\" value=\"workspace-a\""
+    ));
+    assert!(scoped_body.contains(
+        "id=\"tau-ops-memory-channel-filter\" type=\"text\" name=\"channel_id\" value=\"channel-alpha\""
+    ));
+    assert!(scoped_body.contains(
+        "id=\"tau-ops-memory-actor-filter\" type=\"text\" name=\"actor_id\" value=\"operator\""
+    ));
+    assert!(scoped_body.contains("id=\"tau-ops-memory-results\" data-result-count=\"1\""));
+    assert!(scoped_body.contains(
+        "id=\"tau-ops-memory-result-row-0\" data-memory-id=\"mem-scope-target\" data-memory-type=\"fact\""
+    ));
+    assert!(!scoped_body.contains("mem-scope-workspace-miss"));
+    assert!(!scoped_body.contains("mem-scope-channel-miss"));
+    assert!(!scoped_body.contains("mem-scope-actor-miss"));
+
+    let no_match_response = client
+        .get(format!(
+            "http://{addr}/ops/memory?theme=light&sidebar=collapsed&session={session_key}&query=ScopeToken&workspace_id=workspace-a&channel_id=channel-alpha&actor_id=no-match"
+        ))
+        .send()
+        .await
+        .expect("ops memory scoped no-match request");
+    assert_eq!(no_match_response.status(), StatusCode::OK);
+    let no_match_body = no_match_response
+        .text()
+        .await
+        .expect("read scoped no-match body");
+    assert!(no_match_body.contains("id=\"tau-ops-memory-results\" data-result-count=\"0\""));
+    assert!(no_match_body.contains("id=\"tau-ops-memory-empty-state\" data-empty-state=\"true\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2798_c04_ops_shell_exposes_responsive_and_theme_contract_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");
