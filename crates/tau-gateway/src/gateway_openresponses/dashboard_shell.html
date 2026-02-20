@@ -47,6 +47,13 @@
         gap: 0.5rem;
         margin: 1rem 0;
       }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin: 0.5rem 0;
+        align-items: center;
+      }
       .tab {
         border: 1px solid var(--line);
         border-radius: 8px;
@@ -59,11 +66,41 @@
         border-color: var(--accent);
         color: var(--accent);
       }
+      .action {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #111827;
+        color: var(--ink);
+        padding: 0.45rem 0.65rem;
+        cursor: pointer;
+      }
+      .action:hover {
+        border-color: var(--accent);
+      }
+      input[type="text"] {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #0b1220;
+        color: var(--ink);
+        padding: 0.45rem 0.6rem;
+        min-width: 16rem;
+      }
       .view {
         display: none;
       }
       .view.active {
         display: block;
+      }
+      pre {
+        margin: 0.4rem 0 0;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #020617;
+        color: var(--ink);
+        padding: 0.7rem;
+        min-height: 8rem;
+        white-space: pre-wrap;
+        word-break: break-word;
       }
       a {
         color: var(--accent);
@@ -79,6 +116,15 @@
           Embedded gateway shell for dashboard SPA hosting evolution.
           <a href="/webchat">Open webchat</a>.
         </p>
+        <div class="controls">
+          <label class="muted" for="dashboardShellToken">Auth token (optional in localhost-dev):</label>
+          <input
+            id="dashboardShellToken"
+            type="text"
+            placeholder="Bearer token for authenticated endpoints"
+            autocomplete="off"
+          />
+        </div>
         <div class="tabs" role="tablist" aria-label="Dashboard shell views">
           <button class="tab active" data-view="overview" role="tab" aria-selected="true">Overview</button>
           <button class="tab" data-view="sessions" role="tab" aria-selected="false">Sessions</button>
@@ -87,25 +133,56 @@
         </div>
         <section id="dashboard-shell-view-overview" class="view active" role="tabpanel" aria-hidden="false">
           <h2>Overview</h2>
-          <p class="muted">Overview widgets and rollout posture surface is reserved here.</p>
+          <div class="controls">
+            <button id="dashboardOverviewRefresh" class="action" type="button">Refresh overview</button>
+          </div>
+          <pre id="dashboardOverviewOutput">Overview output will appear here.</pre>
         </section>
         <section id="dashboard-shell-view-sessions" class="view" role="tabpanel" aria-hidden="true">
           <h2>Sessions</h2>
-          <p class="muted">Session inspector shell placeholder.</p>
+          <div class="controls">
+            <button id="dashboardSessionsRefresh" class="action" type="button">Refresh sessions</button>
+            <label class="muted" for="dashboardSessionKey">Session key:</label>
+            <input id="dashboardSessionKey" type="text" value="default" autocomplete="off" />
+          </div>
+          <pre id="dashboardSessionsOutput">Sessions output will appear here.</pre>
         </section>
         <section id="dashboard-shell-view-memory" class="view" role="tabpanel" aria-hidden="true">
           <h2>Memory</h2>
-          <p class="muted">Memory browser shell placeholder.</p>
+          <div class="controls">
+            <button id="dashboardMemoryRefresh" class="action" type="button">Refresh memory</button>
+          </div>
+          <pre id="dashboardMemoryOutput">Memory output will appear here.</pre>
         </section>
         <section id="dashboard-shell-view-configuration" class="view" role="tabpanel" aria-hidden="true">
           <h2>Configuration</h2>
-          <p class="muted">Configuration editor shell placeholder.</p>
+          <div class="controls">
+            <button id="dashboardConfigurationRefresh" class="action" type="button">Refresh configuration</button>
+          </div>
+          <pre id="dashboardConfigurationOutput">Configuration output will appear here.</pre>
         </section>
       </section>
     </main>
     <script>
+      const DASHBOARD_HEALTH_ENDPOINT = "/dashboard/health";
+      const DASHBOARD_WIDGETS_ENDPOINT = "/dashboard/widgets";
+      const GATEWAY_SESSIONS_ENDPOINT = "/gateway/sessions";
+      const GATEWAY_SESSION_DETAIL_ENDPOINT_TEMPLATE = "/gateway/sessions/{session_key}";
+      const API_MEMORIES_GRAPH_ENDPOINT = "/api/memories/graph";
+      const GATEWAY_CONFIG_ENDPOINT = "/gateway/config";
+
       const tabs = Array.from(document.querySelectorAll(".tab"));
       const views = Array.from(document.querySelectorAll(".view"));
+      const dashboardShellTokenInput = document.getElementById("dashboardShellToken");
+      const dashboardSessionKeyInput = document.getElementById("dashboardSessionKey");
+      const dashboardOverviewRefreshButton = document.getElementById("dashboardOverviewRefresh");
+      const dashboardSessionsRefreshButton = document.getElementById("dashboardSessionsRefresh");
+      const dashboardMemoryRefreshButton = document.getElementById("dashboardMemoryRefresh");
+      const dashboardConfigurationRefreshButton = document.getElementById("dashboardConfigurationRefresh");
+      const dashboardOverviewOutput = document.getElementById("dashboardOverviewOutput");
+      const dashboardSessionsOutput = document.getElementById("dashboardSessionsOutput");
+      const dashboardMemoryOutput = document.getElementById("dashboardMemoryOutput");
+      const dashboardConfigurationOutput = document.getElementById("dashboardConfigurationOutput");
 
       function activateView(viewName) {
         tabs.forEach((tab) => {
@@ -120,11 +197,187 @@
         });
       }
 
+      function authHeaders() {
+        const token = String(dashboardShellTokenInput.value || "").trim();
+        if (token.length === 0) {
+          return {};
+        }
+        return { Authorization: "Bearer " + token };
+      }
+
+      function resolveSessionDetailEndpoint(sessionKey) {
+        return GATEWAY_SESSION_DETAIL_ENDPOINT_TEMPLATE.replace(
+          "{session_key}",
+          encodeURIComponent(String(sessionKey || ""))
+        );
+      }
+
+      async function fetchJson(endpoint) {
+        const response = await fetch(endpoint, { headers: authHeaders() });
+        const raw = await response.text();
+        let payload = null;
+        try {
+          payload = JSON.parse(raw);
+        } catch (_error) {
+          payload = { raw };
+        }
+        return { ok: response.ok, status: response.status, payload, raw };
+      }
+
+      async function refreshOverviewView() {
+        dashboardOverviewOutput.textContent = "Loading overview...";
+        try {
+          const healthResult = await fetchJson(DASHBOARD_HEALTH_ENDPOINT);
+          const widgetsResult = await fetchJson(DASHBOARD_WIDGETS_ENDPOINT);
+          if (!healthResult.ok || !widgetsResult.ok) {
+            dashboardOverviewOutput.textContent =
+              "overview request failed: health_status=" +
+              String(healthResult.status) +
+              " widgets_status=" +
+              String(widgetsResult.status) +
+              "\nhealth_raw=" +
+              String(healthResult.raw) +
+              "\nwidgets_raw=" +
+              String(widgetsResult.raw);
+            return;
+          }
+          const health = healthResult.payload || {};
+          const widgets = widgetsResult.payload || {};
+          dashboardOverviewOutput.textContent = [
+            "overview_status: ok",
+            "health_state=" + String(health.health_state || "unknown"),
+            "rollout_gate=" + String(health.rollout_gate || "unknown"),
+            "reason_code=" + String(health.reason_code || "unknown"),
+            "queue_depth=" + String(health.queue_depth || 0),
+            "widgets_count=" + String(Array.isArray(widgets.widgets) ? widgets.widgets.length : 0),
+            "",
+            JSON.stringify({ health, widgets }, null, 2)
+          ].join("\n");
+        } catch (error) {
+          dashboardOverviewOutput.textContent = "overview request failed: " + String(error);
+        }
+      }
+
+      async function refreshSessionsView() {
+        dashboardSessionsOutput.textContent = "Loading sessions...";
+        try {
+          const listResult = await fetchJson(GATEWAY_SESSIONS_ENDPOINT);
+          if (!listResult.ok) {
+            dashboardSessionsOutput.textContent =
+              "sessions request failed: status=" + String(listResult.status) + "\n" + String(listResult.raw);
+            return;
+          }
+          const sessions = Array.isArray(listResult.payload.sessions) ? listResult.payload.sessions : [];
+          let sessionKey = String(dashboardSessionKeyInput.value || "").trim();
+          if (sessionKey.length === 0 && sessions.length > 0) {
+            sessionKey = String(sessions[0].session_key || "");
+            dashboardSessionKeyInput.value = sessionKey;
+          }
+          if (sessionKey.length === 0) {
+            dashboardSessionsOutput.textContent = [
+              "sessions_status: ok",
+              "session_count=0",
+              "detail_status=skipped_no_session_key",
+              "",
+              JSON.stringify(listResult.payload, null, 2)
+            ].join("\n");
+            return;
+          }
+          const detailResult = await fetchJson(resolveSessionDetailEndpoint(sessionKey));
+          if (!detailResult.ok) {
+            dashboardSessionsOutput.textContent = [
+              "sessions_status: list_ok_detail_failed",
+              "session_count=" + String(sessions.length),
+              "selected_session_key=" + sessionKey,
+              "detail_status=" + String(detailResult.status),
+              "",
+              "list_payload:",
+              JSON.stringify(listResult.payload, null, 2),
+              "",
+              "detail_raw:",
+              String(detailResult.raw)
+            ].join("\n");
+            return;
+          }
+          dashboardSessionsOutput.textContent = [
+            "sessions_status: ok",
+            "session_count=" + String(sessions.length),
+            "selected_session_key=" + sessionKey,
+            "",
+            JSON.stringify(
+              {
+                sessions: listResult.payload,
+                detail: detailResult.payload
+              },
+              null,
+              2
+            )
+          ].join("\n");
+        } catch (error) {
+          dashboardSessionsOutput.textContent = "sessions request failed: " + String(error);
+        }
+      }
+
+      async function refreshMemoryView() {
+        dashboardMemoryOutput.textContent = "Loading memory graph...";
+        try {
+          const result = await fetchJson(API_MEMORIES_GRAPH_ENDPOINT);
+          if (!result.ok) {
+            dashboardMemoryOutput.textContent =
+              "memory request failed: status=" + String(result.status) + "\n" + String(result.raw);
+            return;
+          }
+          const payload = result.payload || {};
+          const nodes = Array.isArray(payload.nodes) ? payload.nodes.length : 0;
+          const edges = Array.isArray(payload.edges) ? payload.edges.length : 0;
+          dashboardMemoryOutput.textContent = [
+            "memory_status: ok",
+            "nodes=" + String(nodes),
+            "edges=" + String(edges),
+            "",
+            JSON.stringify(payload, null, 2)
+          ].join("\n");
+        } catch (error) {
+          dashboardMemoryOutput.textContent = "memory request failed: " + String(error);
+        }
+      }
+
+      async function refreshConfigurationView() {
+        dashboardConfigurationOutput.textContent = "Loading gateway configuration...";
+        try {
+          const result = await fetchJson(GATEWAY_CONFIG_ENDPOINT);
+          if (!result.ok) {
+            dashboardConfigurationOutput.textContent =
+              "configuration request failed: status=" + String(result.status) + "\n" + String(result.raw);
+            return;
+          }
+          const payload = result.payload || {};
+          dashboardConfigurationOutput.textContent = [
+            "configuration_status: ok",
+            "bind=" + String(payload.bind || "unknown"),
+            "auth_mode=" + String(payload.auth_mode || "unknown"),
+            "rate_limit_window_seconds=" + String(payload.rate_limit_window_seconds || 0),
+            "rate_limit_max_requests=" + String(payload.rate_limit_max_requests || 0),
+            "",
+            JSON.stringify(payload, null, 2)
+          ].join("\n");
+        } catch (error) {
+          dashboardConfigurationOutput.textContent = "configuration request failed: " + String(error);
+        }
+      }
+
       tabs.forEach((tab) => {
         tab.addEventListener("click", () => {
           activateView(tab.dataset.view || "overview");
         });
       });
+
+      dashboardOverviewRefreshButton.addEventListener("click", refreshOverviewView);
+      dashboardSessionsRefreshButton.addEventListener("click", refreshSessionsView);
+      dashboardMemoryRefreshButton.addEventListener("click", refreshMemoryView);
+      dashboardConfigurationRefreshButton.addEventListener("click", refreshConfigurationView);
+
+      refreshOverviewView();
     </script>
   </body>
 </html>

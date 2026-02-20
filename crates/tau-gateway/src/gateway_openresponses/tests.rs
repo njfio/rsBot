@@ -702,6 +702,24 @@ fn unit_spec_2738_c01_dashboard_shell_page_contains_navigation_markers() {
     assert!(html.contains("id=\"dashboard-shell-view-sessions\""));
     assert!(html.contains("id=\"dashboard-shell-view-memory\""));
     assert!(html.contains("id=\"dashboard-shell-view-configuration\""));
+    assert!(html.contains("id=\"dashboardShellToken\""));
+    assert!(html.contains("id=\"dashboardOverviewRefresh\""));
+    assert!(html.contains("id=\"dashboardSessionsRefresh\""));
+    assert!(html.contains("id=\"dashboardMemoryRefresh\""));
+    assert!(html.contains("id=\"dashboardConfigurationRefresh\""));
+    assert!(html.contains("id=\"dashboardOverviewOutput\""));
+    assert!(html.contains("id=\"dashboardSessionsOutput\""));
+    assert!(html.contains("id=\"dashboardMemoryOutput\""));
+    assert!(html.contains("id=\"dashboardConfigurationOutput\""));
+    assert!(html.contains("async function refreshOverviewView()"));
+    assert!(html.contains("async function refreshSessionsView()"));
+    assert!(html.contains("async function refreshMemoryView()"));
+    assert!(html.contains("async function refreshConfigurationView()"));
+    assert!(html.contains(DASHBOARD_HEALTH_ENDPOINT));
+    assert!(html.contains(DASHBOARD_WIDGETS_ENDPOINT));
+    assert!(html.contains(GATEWAY_SESSIONS_ENDPOINT));
+    assert!(html.contains(API_MEMORIES_GRAPH_ENDPOINT));
+    assert!(html.contains(GATEWAY_CONFIG_ENDPOINT));
 }
 
 #[test]
@@ -828,6 +846,19 @@ async fn functional_dashboard_shell_endpoint_returns_html_shell() {
     assert!(body.contains("id=\"dashboard-shell-view-sessions\""));
     assert!(body.contains("id=\"dashboard-shell-view-memory\""));
     assert!(body.contains("id=\"dashboard-shell-view-configuration\""));
+    assert!(body.contains("id=\"dashboardShellToken\""));
+    assert!(body.contains("id=\"dashboardOverviewRefresh\""));
+    assert!(body.contains("id=\"dashboardSessionsRefresh\""));
+    assert!(body.contains("id=\"dashboardMemoryRefresh\""));
+    assert!(body.contains("id=\"dashboardConfigurationRefresh\""));
+    assert!(body.contains("id=\"dashboardOverviewOutput\""));
+    assert!(body.contains("id=\"dashboardSessionsOutput\""));
+    assert!(body.contains("id=\"dashboardMemoryOutput\""));
+    assert!(body.contains("id=\"dashboardConfigurationOutput\""));
+    assert!(body.contains("async function refreshOverviewView()"));
+    assert!(body.contains("async function refreshSessionsView()"));
+    assert!(body.contains("async function refreshMemoryView()"));
+    assert!(body.contains("async function refreshConfigurationView()"));
     handle.abort();
 }
 
