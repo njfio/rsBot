@@ -6839,9 +6839,25 @@ async fn integration_spec_2704_c01_c02_c05_cortex_status_endpoint_reports_tracke
         .await
         .expect("parse cortex status payload");
     assert_eq!(cortex_status_payload["state_present"], Value::Bool(true));
+    assert_eq!(
+        cortex_status_payload["health_state"],
+        Value::String("healthy".to_string())
+    );
+    assert_eq!(
+        cortex_status_payload["rollout_gate"],
+        Value::String("pass".to_string())
+    );
+    assert_eq!(
+        cortex_status_payload["reason_code"],
+        Value::String("cortex_ready".to_string())
+    );
     assert!(cortex_status_payload["total_events"]
         .as_u64()
         .map(|count| count >= 5)
+        .unwrap_or(false));
+    assert!(cortex_status_payload["last_event_age_seconds"]
+        .as_u64()
+        .map(|seconds| seconds <= 21_600)
         .unwrap_or(false));
     assert!(
         cortex_status_payload["event_type_counts"]["cortex.chat.request"]
@@ -6914,6 +6930,18 @@ async fn regression_spec_2704_c03_c04_cortex_status_endpoint_rejects_unauthorize
         .await
         .expect("parse authorized cortex status payload");
     assert_eq!(authorized_payload["state_present"], Value::Bool(false));
+    assert_eq!(
+        authorized_payload["health_state"],
+        Value::String("failing".to_string())
+    );
+    assert_eq!(
+        authorized_payload["rollout_gate"],
+        Value::String("hold".to_string())
+    );
+    assert_eq!(
+        authorized_payload["reason_code"],
+        Value::String("cortex_observer_events_missing".to_string())
+    );
     assert_eq!(
         authorized_payload["total_events"],
         Value::Number(0_u64.into())
@@ -7040,6 +7068,15 @@ async fn integration_spec_2708_c01_c02_c03_cortex_status_counts_memory_and_worke
         .json::<Value>()
         .await
         .expect("parse cortex status payload");
+    assert_eq!(
+        payload["health_state"],
+        Value::String("degraded".to_string())
+    );
+    assert_eq!(payload["rollout_gate"], Value::String("hold".to_string()));
+    assert_eq!(
+        payload["reason_code"],
+        Value::String("cortex_chat_activity_missing".to_string())
+    );
     assert!(payload["event_type_counts"]["memory.write"]
         .as_u64()
         .map(|count| count >= 1)
@@ -7095,6 +7132,15 @@ async fn regression_spec_2708_c04_c05_cortex_status_rejects_unauthorized_and_kee
         .await
         .expect("parse authorized cortex status payload");
     assert_eq!(payload["state_present"], Value::Bool(false));
+    assert_eq!(
+        payload["health_state"],
+        Value::String("failing".to_string())
+    );
+    assert_eq!(payload["rollout_gate"], Value::String("hold".to_string()));
+    assert_eq!(
+        payload["reason_code"],
+        Value::String("cortex_observer_events_missing".to_string())
+    );
     assert_eq!(payload["total_events"], Value::Number(0_u64.into()));
     assert!(payload["diagnostics"]
         .as_array()

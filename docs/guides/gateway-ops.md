@@ -278,9 +278,37 @@ curl -sS http://127.0.0.1:8787/gateway/status \
 
 `/gateway/status` includes `gateway.web_ui` with:
 
-- endpoint paths (`sessions_endpoint`, `session_detail_endpoint`, `session_append_endpoint`, `session_reset_endpoint`, `memory_endpoint`, `ui_telemetry_endpoint`)
+- endpoint paths (`sessions_endpoint`, `session_detail_endpoint`, `session_append_endpoint`, `session_reset_endpoint`, `memory_endpoint`, `ui_telemetry_endpoint`, `cortex_chat_endpoint`, `cortex_status_endpoint`)
 - policy gates (`policy_gates.session_write`, `policy_gates.memory_write`)
 - UI telemetry runtime counters (`telemetry_runtime.total_events`, `last_event_unix_ms`, `view_counts`, `action_counts`, `reason_code_counts`)
+
+Cortex readiness live validation:
+
+```bash
+TAU_CORTEX_AUTH_TOKEN=local-dev-token \
+scripts/dev/cortex-readiness-live-check.sh \
+  --base-url http://127.0.0.1:8787 \
+  --expect-health-state healthy
+```
+
+`/cortex/status` readiness fields include:
+
+- `health_state` (`healthy|degraded|failing|unknown`)
+- `rollout_gate` (`pass|hold`)
+- `reason_code`
+- `health_reason`
+- `last_event_unix_ms`
+- `last_event_age_seconds`
+
+Common readiness reason codes:
+
+- `cortex_ready`
+- `cortex_chat_activity_missing`
+- `cortex_observer_events_stale`
+- `cortex_observer_events_empty`
+- `cortex_observer_events_malformed`
+- `cortex_observer_events_missing`
+- `cortex_observer_events_read_failed`
 
 Session admin API examples:
 
