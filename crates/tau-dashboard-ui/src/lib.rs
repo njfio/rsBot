@@ -143,6 +143,27 @@ impl TauOpsDashboardRoute {
             Self::Login => "/ops/login",
         }
     }
+
+    fn from_shell_path(route: &str) -> Option<Self> {
+        match route {
+            "/ops" => Some(Self::Ops),
+            "/ops/agents" => Some(Self::Agents),
+            "/ops/agents/default" => Some(Self::AgentDetail),
+            "/ops/chat" => Some(Self::Chat),
+            "/ops/sessions" => Some(Self::Sessions),
+            "/ops/memory" => Some(Self::Memory),
+            "/ops/memory-graph" => Some(Self::MemoryGraph),
+            "/ops/tools-jobs" => Some(Self::ToolsJobs),
+            "/ops/channels" => Some(Self::Channels),
+            "/ops/config" => Some(Self::Config),
+            "/ops/training" => Some(Self::Training),
+            "/ops/safety" => Some(Self::Safety),
+            "/ops/diagnostics" => Some(Self::Diagnostics),
+            "/ops/deploy" => Some(Self::Deploy),
+            "/ops/login" => Some(Self::Login),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -514,6 +535,16 @@ pub fn render_tau_ops_dashboard_shell() -> String {
     render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext::default())
 }
 
+/// Public `fn` `render_tau_ops_dashboard_shell_for_route` in `tau-dashboard-ui`.
+pub fn render_tau_ops_dashboard_shell_for_route(route: &str) -> String {
+    let context = TauOpsDashboardShellContext {
+        active_route: TauOpsDashboardRoute::from_shell_path(route)
+            .unwrap_or(TauOpsDashboardRoute::Ops),
+        ..TauOpsDashboardShellContext::default()
+    };
+    render_tau_ops_dashboard_shell_with_context(context)
+}
+
 /// Public `fn` `render_tau_ops_dashboard_shell_with_context` in `tau-dashboard-ui`.
 pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShellContext) -> String {
     let auth_mode = context.auth_mode;
@@ -584,6 +615,16 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
         "false"
     } else {
         "true"
+    };
+    let deploy_panel_hidden = if matches!(context.active_route, TauOpsDashboardRoute::Deploy) {
+        "false"
+    } else {
+        "true"
+    };
+    let deploy_panel_visible = if matches!(context.active_route, TauOpsDashboardRoute::Deploy) {
+        "true"
+    } else {
+        "false"
     };
     let chat_message_rows = if context.chat.message_rows.is_empty() {
         vec![TauOpsDashboardChatMessageRow {
@@ -2061,8 +2102,8 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                     </tbody>
                                 </table>
                             </section>
-                            <section
-                                id="tau-ops-data-table"
+                        <section
+                            id="tau-ops-data-table"
                                 data-route="/ops"
                                 data-timeline-range=timeline_range
                                 data-component="DataTable"
@@ -2097,6 +2138,91 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                     </tbody>
                                 </table>
                             </section>
+                        </section>
+                        <section
+                            id="tau-ops-deploy-panel"
+                            data-route="/ops/deploy"
+                            data-component="DeployWizard"
+                            aria-hidden=deploy_panel_hidden
+                            data-panel-visible=deploy_panel_visible
+                        >
+                            <h2>Deploy Agent</h2>
+                            <nav
+                                id="tau-ops-deploy-wizard-steps"
+                                data-component="DeployWizardSteps"
+                                aria-label="Deploy wizard steps"
+                            >
+                                <ol>
+                                    <li>
+                                        <button
+                                            type="button"
+                                            data-wizard-step="model"
+                                            data-step-index="1"
+                                        >
+                                            "1. Model"
+                                        </button>
+                                    </li>
+                                    <li>
+                                        <button
+                                            type="button"
+                                            data-wizard-step="configuration"
+                                            data-step-index="2"
+                                        >
+                                            "2. Configuration"
+                                        </button>
+                                    </li>
+                                    <li>
+                                        <button
+                                            type="button"
+                                            data-wizard-step="validation"
+                                            data-step-index="3"
+                                        >
+                                            "3. Validation"
+                                        </button>
+                                    </li>
+                                    <li>
+                                        <button
+                                            type="button"
+                                            data-wizard-step="review"
+                                            data-step-index="4"
+                                        >
+                                            "4. Review"
+                                        </button>
+                                    </li>
+                                </ol>
+                            </nav>
+                            <section id="tau-ops-deploy-model-selection">
+                                <label for="tau-ops-deploy-model-catalog">Model Catalog</label>
+                                <select
+                                    id="tau-ops-deploy-model-catalog"
+                                    data-component="ModelCatalogDropdown"
+                                >
+                                    <option value="gpt-4.1-mini">gpt-4.1-mini</option>
+                                    <option value="gpt-4.1">gpt-4.1</option>
+                                </select>
+                            </section>
+                            <section
+                                id="tau-ops-deploy-validation"
+                                data-component="StepValidation"
+                                data-validation-state="pending"
+                            >
+                                <h3>Validation</h3>
+                                <p>Configuration validates on each wizard step.</p>
+                            </section>
+                            <section id="tau-ops-deploy-review" data-component="DeployReviewSummary">
+                                <h3>Review</h3>
+                                <p data-field="summary">Pending full configuration summary.</p>
+                            </section>
+                            <div id="tau-ops-deploy-actions">
+                                <button
+                                    id="tau-ops-deploy-submit"
+                                    type="button"
+                                    data-action="deploy-agent"
+                                    data-success-redirect-template="/ops/agents/{agent_id}"
+                                >
+                                    Deploy Agent
+                                </button>
+                            </div>
                         </section>
                     </main>
                 </div>
