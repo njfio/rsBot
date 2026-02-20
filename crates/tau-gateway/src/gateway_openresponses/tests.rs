@@ -2101,6 +2101,75 @@ async fn integration_spec_2893_c02_c03_c04_ops_sessions_shell_metadata_matches_s
 }
 
 #[tokio::test]
+async fn integration_spec_2897_c01_c02_c04_ops_session_detail_renders_complete_non_empty_message_coverage(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state.clone())
+        .await
+        .expect("spawn server");
+    let client = Client::new();
+
+    let session_key = sanitize_session_key("session-coverage");
+    let session_path = gateway_session_path(&state.config.state_dir, session_key.as_str());
+    let mut store = SessionStore::load(&session_path).expect("load coverage session store");
+    store.set_lock_policy(
+        state.config.session_lock_wait_ms,
+        state.config.session_lock_stale_ms,
+    );
+    let resolved_system_prompt = state.resolved_system_prompt();
+    store
+        .ensure_initialized(&resolved_system_prompt)
+        .expect("initialize coverage session store");
+    let head_id = store.head_id();
+    store
+        .append_messages(
+            head_id,
+            &[
+                Message::user("user coverage message"),
+                Message::assistant_text("assistant coverage message"),
+                Message::tool_result(
+                    "tool-call-1",
+                    "memory_search",
+                    "tool coverage output",
+                    false,
+                ),
+                Message::user(""),
+            ],
+        )
+        .expect("append coverage messages");
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/sessions/{session_key}?theme=dark&sidebar=expanded"
+        ))
+        .send()
+        .await
+        .expect("ops session coverage render request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response
+        .text()
+        .await
+        .expect("read ops session coverage body");
+
+    assert!(body.contains("id=\"tau-ops-session-message-timeline\" data-entry-count=\"4\""));
+    assert_eq!(body.matches("id=\"tau-ops-session-message-row-").count(), 4);
+    assert!(body.contains("data-message-role=\"system\" data-message-content=\"You are Tau.\""));
+    assert!(
+        body.contains("data-message-role=\"user\" data-message-content=\"user coverage message\"")
+    );
+    assert!(body.contains(
+        "data-message-role=\"assistant\" data-message-content=\"assistant coverage message\""
+    ));
+    assert!(
+        body.contains("data-message-role=\"tool\" data-message-content=\"tool coverage output\"")
+    );
+    assert!(!body.contains("data-message-content=\"\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2842_c01_c03_c05_ops_session_detail_shell_exposes_panel_validation_and_empty_timeline_markers(
 ) {
     let temp = tempdir().expect("tempdir");

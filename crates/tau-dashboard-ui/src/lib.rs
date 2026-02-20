@@ -643,6 +643,8 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                     let row_id = format!("tau-ops-session-message-row-{index}");
                     let entry_id = row.entry_id.to_string();
                     let row_entry_id_value = entry_id.clone();
+                    let row_content_attr = row.content.clone();
+                    let row_content_body = row.content.clone();
                     let form_entry_id_value = entry_id.clone();
                     let hidden_entry_id_value = entry_id.clone();
                     let branch_form_id = format!("tau-ops-session-branch-form-{index}");
@@ -659,8 +661,9 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                             id=row_id
                             data-entry-id=row_entry_id_value
                             data-message-role=row.role.clone()
+                            data-message-content=row_content_attr
                         >
-                            {row.content.clone()}
+                            {row_content_body}
                             <form
                                 id=branch_form_id
                                 action="/ops/sessions/branch"
@@ -2489,6 +2492,70 @@ mod tests {
         assert!(html.contains("second detail message"));
         assert!(html.contains(
             "id=\"tau-ops-session-usage-summary\" data-input-tokens=\"0\" data-output-tokens=\"0\" data-total-tokens=\"0\" data-estimated-cost-usd=\"0.000000\""
+        ));
+    }
+
+    #[test]
+    fn functional_spec_2897_c01_c02_session_detail_timeline_exposes_complete_content_markers() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Sessions,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot {
+                active_session_key: "session-coverage".to_string(),
+                send_form_action: "/ops/chat/send".to_string(),
+                send_form_method: "post".to_string(),
+                session_options: vec![TauOpsDashboardChatSessionOptionRow {
+                    session_key: "session-coverage".to_string(),
+                    selected: true,
+                    entry_count: 0,
+                    usage_total_tokens: 0,
+                    validation_is_valid: true,
+                    updated_unix_ms: 0,
+                }],
+                message_rows: vec![],
+                session_detail_visible: true,
+                session_detail_route: "/ops/sessions/session-coverage".to_string(),
+                session_detail_timeline_rows: vec![
+                    TauOpsDashboardSessionTimelineRow {
+                        entry_id: 0,
+                        role: "system".to_string(),
+                        content: "system coverage message".to_string(),
+                    },
+                    TauOpsDashboardSessionTimelineRow {
+                        entry_id: 1,
+                        role: "user".to_string(),
+                        content: "user coverage message".to_string(),
+                    },
+                    TauOpsDashboardSessionTimelineRow {
+                        entry_id: 2,
+                        role: "assistant".to_string(),
+                        content: "assistant coverage message".to_string(),
+                    },
+                    TauOpsDashboardSessionTimelineRow {
+                        entry_id: 3,
+                        role: "tool".to_string(),
+                        content: "tool coverage output".to_string(),
+                    },
+                ],
+                ..TauOpsDashboardChatSnapshot::default()
+            },
+        });
+
+        assert!(html.contains("id=\"tau-ops-session-message-timeline\" data-entry-count=\"4\""));
+        assert!(html.contains(
+            "id=\"tau-ops-session-message-row-0\" data-entry-id=\"0\" data-message-role=\"system\" data-message-content=\"system coverage message\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-session-message-row-1\" data-entry-id=\"1\" data-message-role=\"user\" data-message-content=\"user coverage message\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-session-message-row-2\" data-entry-id=\"2\" data-message-role=\"assistant\" data-message-content=\"assistant coverage message\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-session-message-row-3\" data-entry-id=\"3\" data-message-role=\"tool\" data-message-content=\"tool coverage output\""
         ));
     }
 
