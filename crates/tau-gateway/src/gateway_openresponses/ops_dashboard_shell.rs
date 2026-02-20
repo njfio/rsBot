@@ -349,8 +349,8 @@ pub(super) async fn handle_ops_dashboard_chat_send(
         form.resolved_sidebar_state(),
         session_key.as_str(),
     );
-    let content = form.message.trim();
-    if content.is_empty() {
+    let content = form.message.as_str();
+    if content.trim().is_empty() {
         return Redirect::to(redirect_path.as_str()).into_response();
     }
 
