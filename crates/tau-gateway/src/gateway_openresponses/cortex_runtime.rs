@@ -17,7 +17,9 @@ use axum::Json;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tau_ai::{ChatRequest, Message, PromptCacheConfig};
 use tau_core::current_unix_timestamp_ms;
+use tau_memory::runtime::FileMemoryStore;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -31,6 +33,22 @@ const CORTEX_OBSERVER_SCHEMA_VERSION: u32 = 1;
 const CORTEX_OBSERVER_RECENT_EVENTS_LIMIT: usize = 32;
 const CORTEX_READINESS_STALE_MAX_AGE_SECONDS: u64 = 21_600;
 const CORTEX_REQUIRED_CHAT_EVENT_TYPE: &str = "cortex.chat.request";
+const CORTEX_CHAT_MAX_PROMPT_CHARS: usize = 8_000;
+const CORTEX_CHAT_MAX_OUTPUT_CHARS: usize = 4_000;
+const CORTEX_CHAT_MAX_BULLETIN_CHARS: usize = 1_200;
+const CORTEX_CHAT_MAX_OBSERVER_DIAGNOSTICS: usize = 3;
+const CORTEX_CHAT_MAX_MEMORY_DIAGNOSTICS: usize = 3;
+const CORTEX_CHAT_MEMORY_MAX_SESSIONS: usize = 8;
+const CORTEX_CHAT_MEMORY_MAX_RECORDS_PER_SESSION: usize = 8;
+const CORTEX_CHAT_SYSTEM_PROMPT: &str = "You are Tau Cortex admin copilot. Provide concise,\
+ actionable operator guidance grounded in supplied runtime context. Respond with plain text only.";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CortexChatOutput {
+    output_text: String,
+    reason_code: &'static str,
+    fallback: bool,
+}
 
 #[derive(Debug, Deserialize)]
 struct GatewayCortexChatRequest {
@@ -116,29 +134,35 @@ pub(super) async fn handle_cortex_chat(
 
     let response_id = format!("cortex_{}", state.next_response_id());
     let created_unix_ms = current_unix_timestamp_ms();
-    let output_text = render_cortex_output_text(normalized_input, state.config.model.as_str());
+    let output = complete_cortex_chat(&state, normalized_input).await;
     let _ = record_cortex_observer_event(
         &state.config.state_dir,
         "cortex.chat.request",
         json!({
             "response_id": response_id.clone(),
             "input_chars": normalized_input.chars().count(),
+            "output_chars": output.output_text.chars().count(),
+            "reason_code": output.reason_code,
+            "fallback": output.fallback,
         }),
     );
+    let output_text = output.output_text.clone();
 
     let (tx, rx) = mpsc::unbounded_channel::<SseFrame>();
     let _ = tx.send(SseFrame::Json {
         event: "cortex.response.created",
         payload: json!({
             "schema_version": 1,
-            "response_id": response_id,
+            "response_id": response_id.clone(),
             "created_unix_ms": created_unix_ms,
+            "reason_code": output.reason_code,
+            "fallback": output.fallback,
         }),
     });
     let _ = tx.send(SseFrame::Json {
         event: "cortex.response.output_text.delta",
         payload: json!({
-            "response_id": response_id,
+            "response_id": response_id.clone(),
             "delta": output_text,
         }),
     });
@@ -529,12 +553,283 @@ fn gateway_cortex_observer_events_path(state_dir: &Path) -> PathBuf {
         .join(CORTEX_OBSERVER_EVENTS_FILE)
 }
 
-fn render_cortex_output_text(input: &str, model: &str) -> String {
+async fn complete_cortex_chat(
+    state: &Arc<GatewayOpenResponsesServerState>,
+    input: &str,
+) -> CortexChatOutput {
+    let observer_summary = match load_cortex_status_report(&state.config.state_dir) {
+        Ok(report) => render_cortex_observer_summary(&report),
+        Err(error) => format!(
+            "health_state=unavailable rollout_gate=hold reason_code={} diagnostics={}",
+            error.code,
+            truncate_chars(collapse_whitespace(error.message.as_str()).as_str(), 160)
+        ),
+    };
+    let bulletin_summary =
+        render_cortex_bulletin_context(state.cortex.bulletin_snapshot().as_str());
+    let memory_graph_summary = render_cortex_memory_graph_summary(&state.config.state_dir);
+    let user_prompt = truncate_chars(
+        render_cortex_chat_user_prompt(
+            input,
+            observer_summary.as_str(),
+            bulletin_summary.as_str(),
+            memory_graph_summary.as_str(),
+        )
+        .as_str(),
+        CORTEX_CHAT_MAX_PROMPT_CHARS,
+    );
+    let request = ChatRequest {
+        model: state.config.model.clone(),
+        messages: vec![
+            Message::system(CORTEX_CHAT_SYSTEM_PROMPT),
+            Message::user(user_prompt),
+        ],
+        tools: Vec::new(),
+        tool_choice: None,
+        json_mode: false,
+        max_tokens: Some(384),
+        temperature: Some(0.0),
+        prompt_cache: PromptCacheConfig::default(),
+    };
+
+    match state.config.client.complete(request).await {
+        Ok(response) => {
+            let output_text = truncate_chars(
+                collapse_whitespace(response.message.text_content().as_str()).as_str(),
+                CORTEX_CHAT_MAX_OUTPUT_CHARS,
+            );
+            if output_text.is_empty() {
+                let reason_code = "cortex_chat_llm_empty_fallback";
+                return CortexChatOutput {
+                    output_text: render_cortex_fallback_output(
+                        input,
+                        state.config.model.as_str(),
+                        reason_code,
+                    ),
+                    reason_code,
+                    fallback: true,
+                };
+            }
+            CortexChatOutput {
+                output_text,
+                reason_code: "cortex_chat_llm_applied",
+                fallback: false,
+            }
+        }
+        Err(_) => {
+            let reason_code = "cortex_chat_llm_error_fallback";
+            CortexChatOutput {
+                output_text: render_cortex_fallback_output(
+                    input,
+                    state.config.model.as_str(),
+                    reason_code,
+                ),
+                reason_code,
+                fallback: true,
+            }
+        }
+    }
+}
+
+fn render_cortex_chat_user_prompt(
+    input: &str,
+    observer_summary: &str,
+    bulletin_summary: &str,
+    memory_graph_summary: &str,
+) -> String {
     format!(
-        "Cortex admin foundation active. Received {} characters. Active model: {}.",
-        input.chars().count(),
-        model
+        "[operator_query]\n{}\n\n[observer_status]\n{}\n\n[cortex_bulletin]\n{}\n\n[memory_graph]\n{}\n\n[response_style]\nReturn concise operator guidance with immediate next checks and explicit risks.",
+        input.trim(),
+        observer_summary.trim(),
+        bulletin_summary.trim(),
+        memory_graph_summary.trim(),
     )
+}
+
+fn render_cortex_observer_summary(report: &GatewayCortexStatusReport) -> String {
+    let mut event_type_counts = report
+        .event_type_counts
+        .iter()
+        .map(|(event_type, count)| (event_type.clone(), *count))
+        .collect::<Vec<_>>();
+    event_type_counts
+        .sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
+    event_type_counts.truncate(5);
+    let event_summary = if event_type_counts.is_empty() {
+        "none".to_string()
+    } else {
+        event_type_counts
+            .iter()
+            .map(|(event_type, count)| format!("{event_type}:{count}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let diagnostics = format_bounded_diagnostics(
+        report.diagnostics.as_slice(),
+        CORTEX_CHAT_MAX_OBSERVER_DIAGNOSTICS,
+    );
+    format!(
+        "health_state={} rollout_gate={} reason_code={} total_events={} invalid_events={} last_event_age_seconds={} top_event_types={} diagnostics={}",
+        report.health_state,
+        report.rollout_gate,
+        report.reason_code,
+        report.total_events,
+        report.invalid_events,
+        report
+            .last_event_age_seconds
+            .map(|age| age.to_string())
+            .unwrap_or_else(|| "unknown".to_string()),
+        event_summary,
+        diagnostics,
+    )
+}
+
+fn render_cortex_bulletin_context(bulletin_snapshot: &str) -> String {
+    let bulletin = truncate_chars(
+        collapse_whitespace(bulletin_snapshot).as_str(),
+        CORTEX_CHAT_MAX_BULLETIN_CHARS,
+    );
+    if bulletin.is_empty() {
+        "bulletin_unavailable: cortex bulletin snapshot is empty".to_string()
+    } else {
+        bulletin
+    }
+}
+
+fn render_cortex_memory_graph_summary(state_dir: &Path) -> String {
+    let memory_store_root = state_dir.join("openresponses").join("memory-store");
+    if !memory_store_root.exists() {
+        return "reason_code=memory_graph_store_missing sessions_scanned=0 records_total=0 relation_edges_total=0 memory_types=none diagnostics=store_missing".to_string();
+    }
+    if !memory_store_root.is_dir() {
+        return format!(
+            "reason_code=memory_graph_store_not_directory sessions_scanned=0 records_total=0 relation_edges_total=0 memory_types=none diagnostics=root_not_directory:{}",
+            memory_store_root.display()
+        );
+    }
+
+    let mut diagnostics = Vec::<String>::new();
+    let dir_entries = match std::fs::read_dir(&memory_store_root) {
+        Ok(entries) => entries,
+        Err(error) => {
+            return format!(
+                "reason_code=memory_graph_store_unreadable sessions_scanned=0 records_total=0 relation_edges_total=0 memory_types=none diagnostics={}",
+                truncate_chars(
+                    format!("read_dir_failed:{error}").as_str(),
+                    160
+                )
+            );
+        }
+    };
+
+    let mut session_paths = dir_entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    session_paths.sort();
+    if session_paths.len() > CORTEX_CHAT_MEMORY_MAX_SESSIONS {
+        diagnostics.push(format!(
+            "sessions_truncated:discovered={} max_sessions={}",
+            session_paths.len(),
+            CORTEX_CHAT_MEMORY_MAX_SESSIONS
+        ));
+    }
+
+    let mut sessions_scanned = 0u64;
+    let mut records_total = 0u64;
+    let mut relation_edges_total = 0u64;
+    let mut memory_type_counts = BTreeMap::<String, u64>::new();
+    for session_path in session_paths
+        .into_iter()
+        .take(CORTEX_CHAT_MEMORY_MAX_SESSIONS)
+    {
+        let store = FileMemoryStore::new(&session_path);
+        match store.list_latest_records(None, CORTEX_CHAT_MEMORY_MAX_RECORDS_PER_SESSION) {
+            Ok(records) => {
+                sessions_scanned = sessions_scanned.saturating_add(1);
+                records_total = records_total.saturating_add(records.len() as u64);
+                for record in records {
+                    relation_edges_total =
+                        relation_edges_total.saturating_add(record.relations.len() as u64);
+                    *memory_type_counts
+                        .entry(record.memory_type.as_str().to_string())
+                        .or_default() += 1;
+                }
+            }
+            Err(error) => diagnostics.push(format!(
+                "session_read_failed:{}:{}",
+                session_path
+                    .file_name()
+                    .and_then(|value| value.to_str())
+                    .unwrap_or("unknown"),
+                truncate_chars(error.to_string().as_str(), 120)
+            )),
+        }
+    }
+
+    let reason_code = if records_total == 0 {
+        "memory_graph_records_unavailable"
+    } else if diagnostics.is_empty() {
+        "memory_graph_summary_ok"
+    } else {
+        "memory_graph_summary_partial"
+    };
+    let memory_types = if memory_type_counts.is_empty() {
+        "none".to_string()
+    } else {
+        memory_type_counts
+            .iter()
+            .map(|(memory_type, count)| format!("{memory_type}:{count}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+
+    format!(
+        "reason_code={} sessions_scanned={} records_total={} relation_edges_total={} memory_types={} diagnostics={}",
+        reason_code,
+        sessions_scanned,
+        records_total,
+        relation_edges_total,
+        memory_types,
+        format_bounded_diagnostics(
+            diagnostics.as_slice(),
+            CORTEX_CHAT_MAX_MEMORY_DIAGNOSTICS
+        ),
+    )
+}
+
+fn render_cortex_fallback_output(input: &str, model: &str, reason_code: &str) -> String {
+    format!(
+        "Cortex fallback response engaged. reason_code={reason_code} model={} input_chars={}. Review observer status, bulletin context, and memory graph diagnostics before acting.",
+        model.trim(),
+        input.chars().count()
+    )
+}
+
+fn format_bounded_diagnostics(values: &[String], limit: usize) -> String {
+    let mut diagnostics = values
+        .iter()
+        .take(limit)
+        .map(|value| truncate_chars(collapse_whitespace(value.as_str()).as_str(), 120))
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    if values.len() > limit {
+        diagnostics.push(format!("+{} more", values.len().saturating_sub(limit)));
+    }
+    if diagnostics.is_empty() {
+        "none".to_string()
+    } else {
+        diagnostics.join(";")
+    }
+}
+
+fn collapse_whitespace(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
 }
 
 #[cfg(test)]
@@ -543,10 +838,38 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn unit_render_cortex_output_text_includes_char_count_and_model() {
-        let output = render_cortex_output_text("hello", "openai/gpt-4o-mini");
-        assert!(output.contains("Received 5 characters"));
+    fn unit_render_cortex_chat_user_prompt_includes_required_context_markers() {
+        let prompt = render_cortex_chat_user_prompt(
+            "summarize risks",
+            "health_state=healthy",
+            "## Cortex Memory Bulletin - release stabilization",
+            "reason_code=memory_graph_summary_ok",
+        );
+        assert!(prompt.contains("[operator_query]"));
+        assert!(prompt.contains("[observer_status]"));
+        assert!(prompt.contains("[cortex_bulletin]"));
+        assert!(prompt.contains("[memory_graph]"));
+    }
+
+    #[test]
+    fn unit_render_cortex_fallback_output_includes_reason_and_model() {
+        let output = render_cortex_fallback_output(
+            "hello",
+            "openai/gpt-4o-mini",
+            "cortex_chat_llm_error_fallback",
+        );
+        assert!(output.contains("Cortex fallback response engaged"));
+        assert!(output.contains("cortex_chat_llm_error_fallback"));
         assert!(output.contains("openai/gpt-4o-mini"));
+        assert!(output.contains("input_chars=5"));
+    }
+
+    #[test]
+    fn unit_render_cortex_memory_graph_summary_reports_missing_store() {
+        let temp = tempdir().expect("tempdir");
+        let summary = render_cortex_memory_graph_summary(temp.path());
+        assert!(summary.contains("reason_code=memory_graph_store_missing"));
+        assert!(summary.contains("records_total=0"));
     }
 
     #[test]

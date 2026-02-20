@@ -68,6 +68,54 @@ impl LlmClient for PanicGatewayLlmClient {
     }
 }
 
+#[derive(Clone)]
+struct CaptureGatewayLlmClient {
+    reply_text: String,
+    captured_requests: Arc<Mutex<Vec<ChatRequest>>>,
+}
+
+impl CaptureGatewayLlmClient {
+    fn new(reply_text: &str) -> Self {
+        Self {
+            reply_text: reply_text.to_string(),
+            captured_requests: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn captured_requests(&self) -> Vec<ChatRequest> {
+        self.captured_requests
+            .lock()
+            .map(|requests| requests.clone())
+            .unwrap_or_default()
+    }
+}
+
+#[async_trait]
+impl LlmClient for CaptureGatewayLlmClient {
+    async fn complete(&self, request: ChatRequest) -> Result<ChatResponse, TauAiError> {
+        if let Ok(mut requests) = self.captured_requests.lock() {
+            requests.push(request);
+        }
+        Ok(ChatResponse {
+            message: Message::assistant_text(self.reply_text.clone()),
+            finish_reason: Some("stop".to_string()),
+            usage: ChatUsage::default(),
+        })
+    }
+}
+
+#[derive(Clone, Default)]
+struct ErrorGatewayLlmClient;
+
+#[async_trait]
+impl LlmClient for ErrorGatewayLlmClient {
+    async fn complete(&self, _request: ChatRequest) -> Result<ChatResponse, TauAiError> {
+        Err(TauAiError::InvalidResponse(
+            "forced cortex provider failure".to_string(),
+        ))
+    }
+}
+
 #[derive(Clone, Copy)]
 struct FixtureInventoryTool {
     name: &'static str,
@@ -6745,6 +6793,160 @@ async fn regression_spec_2701_c03_c04_cortex_chat_endpoint_rejects_unauthorized_
         .await
         .expect("parse invalid cortex chat payload");
     assert_eq!(invalid_payload["error"]["code"], "invalid_cortex_input");
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_spec_2953_c01_c02_c04_cortex_chat_uses_llm_output_with_context_markers_and_stable_sse_order(
+) {
+    let temp = tempdir().expect("tempdir");
+    let capture_client = Arc::new(CaptureGatewayLlmClient::new(
+        "llm answer for cortex operators",
+    ));
+    let state = test_state_with_client_and_auth(
+        temp.path(),
+        10_000,
+        capture_client.clone(),
+        Arc::new(NoopGatewayToolRegistrar),
+        GatewayOpenResponsesAuthMode::Token,
+        Some("secret"),
+        None,
+        60,
+        120,
+    );
+    state
+        .cortex
+        .set_bulletin_for_test("## Cortex Memory Bulletin\n- prioritize release stabilization");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .post("http://".to_string() + &addr.to_string() + "/cortex/chat")
+        .bearer_auth("secret")
+        .json(&json!({
+            "input": "summarize operator priorities and risks"
+        }))
+        .send()
+        .await
+        .expect("cortex chat response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < deadline {
+        let maybe_chunk = tokio::time::timeout(Duration::from_millis(250), stream.next()).await;
+        let Ok(Some(Ok(chunk))) = maybe_chunk else {
+            continue;
+        };
+        buffer.push_str(String::from_utf8_lossy(&chunk).as_ref());
+        if buffer.contains("event: done") {
+            break;
+        }
+    }
+
+    assert!(buffer.contains("\"delta\":\"llm answer for cortex operators\""));
+    assert!(buffer.contains("\"text\":\"llm answer for cortex operators\""));
+    assert!(!buffer.contains("Cortex admin foundation active"));
+    assert!(buffer.contains("\"reason_code\":\"cortex_chat_llm_applied\""));
+
+    let created_idx = buffer
+        .find("event: cortex.response.created")
+        .expect("created event");
+    let delta_idx = buffer
+        .find("event: cortex.response.output_text.delta")
+        .expect("delta event");
+    let output_done_idx = buffer
+        .find("event: cortex.response.output_text.done")
+        .expect("output done event");
+    let stream_done_idx = buffer.find("event: done").expect("stream done event");
+    assert!(created_idx < delta_idx);
+    assert!(delta_idx < output_done_idx);
+    assert!(output_done_idx < stream_done_idx);
+
+    let requests = capture_client.captured_requests();
+    assert_eq!(requests.len(), 1, "expected one llm request");
+    let request = &requests[0];
+    assert_eq!(request.model, "openai/gpt-4o-mini");
+    let user_prompt = request
+        .messages
+        .iter()
+        .find(|message| message.role == MessageRole::User)
+        .map(|message| message.text_content())
+        .unwrap_or_default();
+    assert!(user_prompt.contains("[observer_status]"));
+    assert!(user_prompt.contains("[cortex_bulletin]"));
+    assert!(user_prompt.contains("[memory_graph]"));
+    assert!(user_prompt.contains("prioritize release stabilization"));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2953_c03_c04_cortex_chat_provider_failure_uses_deterministic_fallback_and_reason_code(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state_with_client_and_auth(
+        temp.path(),
+        10_000,
+        Arc::new(ErrorGatewayLlmClient),
+        Arc::new(NoopGatewayToolRegistrar),
+        GatewayOpenResponsesAuthMode::Token,
+        Some("secret"),
+        None,
+        60,
+        120,
+    );
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .post("http://".to_string() + &addr.to_string() + "/cortex/chat")
+        .bearer_auth("secret")
+        .json(&json!({
+            "input": "analyze incident queue pressure"
+        }))
+        .send()
+        .await
+        .expect("cortex chat response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < deadline {
+        let maybe_chunk = tokio::time::timeout(Duration::from_millis(250), stream.next()).await;
+        let Ok(Some(Ok(chunk))) = maybe_chunk else {
+            continue;
+        };
+        buffer.push_str(String::from_utf8_lossy(&chunk).as_ref());
+        if buffer.contains("event: done") {
+            break;
+        }
+    }
+
+    assert!(buffer.contains("event: cortex.response.created"));
+    assert!(buffer.contains("event: cortex.response.output_text.delta"));
+    assert!(buffer.contains("event: cortex.response.output_text.done"));
+    assert!(buffer.contains("event: done"));
+    assert!(buffer.contains("\"reason_code\":\"cortex_chat_llm_error_fallback\""));
+    assert!(buffer.contains("\"fallback\":true"));
+    assert!(buffer.contains("Cortex fallback response engaged"));
+
+    let created_idx = buffer
+        .find("event: cortex.response.created")
+        .expect("created event");
+    let delta_idx = buffer
+        .find("event: cortex.response.output_text.delta")
+        .expect("delta event");
+    let output_done_idx = buffer
+        .find("event: cortex.response.output_text.done")
+        .expect("output done event");
+    let stream_done_idx = buffer.find("event: done").expect("stream done event");
+    assert!(created_idx < delta_idx);
+    assert!(delta_idx < output_done_idx);
+    assert!(output_done_idx < stream_done_idx);
 
     handle.abort();
 }
