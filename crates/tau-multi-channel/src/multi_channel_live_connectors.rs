@@ -34,6 +34,7 @@ use tau_core::current_unix_timestamp_ms;
 
 const LIVE_CONNECTORS_SCHEMA_VERSION: u32 = 1;
 const MAX_POLL_BATCH_SIZE: usize = 50;
+const DISCORD_FIRST_POLL_BACKFILL_LIMIT: usize = 100;
 const CONNECTOR_BREAKER_STATE_CLOSED: &str = "closed";
 const CONNECTOR_BREAKER_STATE_OPEN: &str = "open";
 const CONNECTOR_BREAKER_STATE_HALF_OPEN: &str = "half_open";
@@ -758,6 +759,21 @@ async fn poll_discord_messages(
             continue;
         }
         let channel_id = channel_id.trim().to_string();
+        let previous_id = state
+            .discord_last_message_ids
+            .get(channel_id.as_str())
+            .cloned();
+        let request_limit = if previous_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+        {
+            MAX_POLL_BATCH_SIZE
+        } else {
+            DISCORD_FIRST_POLL_BACKFILL_LIMIT
+        };
+        let request_limit_raw = request_limit.to_string();
         let url = format!("{base}/channels/{channel_id}/messages");
         let response = request_json_with_retry(
             config.retry_max_attempts,
@@ -767,7 +783,7 @@ async fn poll_discord_messages(
             || {
                 client
                     .get(url.as_str())
-                    .query(&[("limit", MAX_POLL_BATCH_SIZE.to_string().as_str())])
+                    .query(&[("limit", request_limit_raw.as_str())])
                     .header("authorization", auth_header.as_str())
             },
         )
@@ -796,10 +812,6 @@ async fn poll_discord_messages(
             let right_id = right.get("id").and_then(Value::as_str).unwrap_or_default();
             compare_discord_message_ids(left_id, right_id)
         });
-        let previous_id = state
-            .discord_last_message_ids
-            .get(channel_id.as_str())
-            .cloned();
         let mut latest_seen = previous_id.clone().unwrap_or_default();
         for message in &messages {
             if !allowlisted_guild_ids.is_empty() {
@@ -1387,6 +1399,20 @@ mod tests {
         })
     }
 
+    fn discord_message_payload(id: u128, content: &str, guild_id: Option<&str>) -> Value {
+        let mut payload = json!({
+            "id": id.to_string(),
+            "channel_id":"discord-room",
+            "content": content,
+            "timestamp":"2025-10-10T12:30:00Z",
+            "author":{"id":"discord-user-1","username":"n"}
+        });
+        if let Some(guild_id) = guild_id {
+            payload["guild_id"] = Value::String(guild_id.to_string());
+        }
+        payload
+    }
+
     #[test]
     fn unit_load_status_report_returns_default_when_state_is_missing() {
         let temp = tempdir().expect("tempdir");
@@ -1594,6 +1620,7 @@ mod tests {
         let discord_mock = server.mock(|when, then| {
             when.method(GET)
                 .path("/channels/discord-room/messages")
+                .query_param("limit", "100")
                 .header("authorization", "Bot discord-token");
             then.status(200).body(
                 json!([{
@@ -1639,6 +1666,7 @@ mod tests {
         let discord_mock = server.mock(|when, then| {
             when.method(GET)
                 .path("/channels/discord-room/messages")
+                .query_param("limit", "100")
                 .header("authorization", "Bot discord-token");
             then.status(200).body(
                 json!([
@@ -1689,6 +1717,75 @@ mod tests {
             Some("guild-allow")
         );
         discord_mock.assert_calls(1);
+    }
+
+    #[tokio::test]
+    async fn integration_discord_first_run_backfills_then_next_cycle_is_incremental() {
+        let temp = tempdir().expect("tempdir");
+        let server = MockServer::start();
+        let base_id: u128 = 1_900_000_000_000_000_000;
+        let backfill_messages = (0..100u128)
+            .rev()
+            .map(|offset| {
+                discord_message_payload(
+                    base_id.saturating_add(offset),
+                    format!("backfill-{offset}").as_str(),
+                    None,
+                )
+            })
+            .collect::<Vec<_>>();
+        let incremental_messages = vec![
+            discord_message_payload(base_id.saturating_add(97), "old-97", None),
+            discord_message_payload(base_id.saturating_add(98), "old-98", None),
+            discord_message_payload(base_id.saturating_add(99), "old-99", None),
+            discord_message_payload(base_id.saturating_add(100), "new-100", None),
+        ];
+
+        let first_run_mock = server.mock(|when, then| {
+            when.method(GET)
+                .path("/channels/discord-room/messages")
+                .query_param("limit", "100")
+                .header("authorization", "Bot discord-token");
+            then.status(200)
+                .body(Value::Array(backfill_messages).to_string());
+        });
+        let second_run_mock = server.mock(|when, then| {
+            when.method(GET)
+                .path("/channels/discord-room/messages")
+                .query_param("limit", "50")
+                .header("authorization", "Bot discord-token");
+            then.status(200)
+                .body(Value::Array(incremental_messages).to_string());
+        });
+
+        let mut config = build_connector_config(temp.path());
+        config.discord_mode = MultiChannelLiveConnectorMode::Polling;
+        config.discord_api_base = server.base_url();
+        config.discord_bot_token = Some("discord-token".to_string());
+        config.discord_ingress_channel_ids = vec!["discord-room".to_string()];
+
+        run_multi_channel_live_connectors_runner(config.clone())
+            .await
+            .expect("first poll cycle should succeed");
+        run_multi_channel_live_connectors_runner(config.clone())
+            .await
+            .expect("second poll cycle should succeed");
+
+        let discord_lines = read_ndjson(&config.ingress_dir.join("discord.ndjson"));
+        let first_id = base_id.to_string();
+        let latest_id = base_id.saturating_add(100).to_string();
+        assert_eq!(discord_lines.len(), 101);
+        assert_eq!(
+            discord_lines[0]["payload"]["id"].as_str(),
+            Some(first_id.as_str())
+        );
+        assert_eq!(
+            discord_lines[100]["payload"]["id"].as_str(),
+            Some(latest_id.as_str())
+        );
+
+        first_run_mock.assert_calls(1);
+        second_run_mock.assert_calls(1);
     }
 
     #[tokio::test]
