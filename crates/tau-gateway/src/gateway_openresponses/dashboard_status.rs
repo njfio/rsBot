@@ -1,6 +1,9 @@
 //! Dashboard backend status and control helpers for gateway API surfaces.
 use super::*;
-use tau_dashboard_ui::{TauOpsDashboardAlertFeedRow, TauOpsDashboardCommandCenterSnapshot};
+use tau_dashboard_ui::{
+    TauOpsDashboardAlertFeedRow, TauOpsDashboardCommandCenterSnapshot,
+    TauOpsDashboardConnectorHealthRow,
+};
 
 const DASHBOARD_SCHEMA_VERSION: u32 = 1;
 const DASHBOARD_STATE_FILE: &str = "state.json";
@@ -523,6 +526,7 @@ pub(super) fn collect_tau_ops_dashboard_command_center_snapshot(
     gateway_state_dir: &Path,
 ) -> TauOpsDashboardCommandCenterSnapshot {
     let snapshot = collect_gateway_dashboard_snapshot(gateway_state_dir);
+    let multi_channel_report = collect_gateway_multi_channel_status_report(gateway_state_dir);
     let alert_count = snapshot.alerts.len();
     let primary_alert = snapshot.alerts.first();
     let rollout_gate = snapshot.health.rollout_gate.clone();
@@ -544,6 +548,28 @@ pub(super) fn collect_tau_ops_dashboard_command_center_snapshot(
         .iter()
         .any(|action| action.as_str().eq("refresh"));
     let last_action = snapshot.control.last_action.as_ref();
+    let connector_health_rows = if multi_channel_report.connectors.channels.is_empty() {
+        vec![TauOpsDashboardConnectorHealthRow {
+            channel: "none".to_string(),
+            mode: "unknown".to_string(),
+            liveness: "unknown".to_string(),
+            events_ingested: 0,
+            provider_failures: 0,
+        }]
+    } else {
+        multi_channel_report
+            .connectors
+            .channels
+            .iter()
+            .map(|(channel, connector)| TauOpsDashboardConnectorHealthRow {
+                channel: channel.clone(),
+                mode: connector.mode.clone(),
+                liveness: connector.liveness.clone(),
+                events_ingested: connector.events_ingested,
+                provider_failures: connector.provider_failures,
+            })
+            .collect()
+    };
 
     TauOpsDashboardCommandCenterSnapshot {
         health_state: snapshot.health.health_state,
@@ -599,6 +625,7 @@ pub(super) fn collect_tau_ops_dashboard_command_center_snapshot(
                 message: alert.message.clone(),
             })
             .collect(),
+        connector_health_rows,
     }
 }
 
@@ -1210,5 +1237,11 @@ invalid-json-line
         assert!(snapshot.alert_feed_rows[0]
             .message
             .contains("runtime events log contains 1 malformed line(s)"));
+        assert_eq!(snapshot.connector_health_rows.len(), 1);
+        assert_eq!(snapshot.connector_health_rows[0].channel, "none");
+        assert_eq!(snapshot.connector_health_rows[0].mode, "unknown");
+        assert_eq!(snapshot.connector_health_rows[0].liveness, "unknown");
+        assert_eq!(snapshot.connector_health_rows[0].events_ingested, 0);
+        assert_eq!(snapshot.connector_health_rows[0].provider_failures, 0);
     }
 }
