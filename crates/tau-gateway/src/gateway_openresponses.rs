@@ -4147,8 +4147,7 @@ async fn execute_openresponses_request(
             max_turns: state.config.max_turns,
             temperature: Some(0.0),
             max_tokens: None,
-            // Fail closed on preflight limits: keep input compaction disabled so
-            // over-budget requests are rejected instead of compacted away.
+            // Fail closed on preflight limits: reject over-budget requests instead of compacting them.
             max_estimated_input_tokens: None,
             max_estimated_total_tokens: preflight_input_tokens,
             ..AgentConfig::default()
