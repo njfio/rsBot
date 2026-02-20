@@ -1,6 +1,6 @@
 # Spec: Issue #2870 - chat markdown and code-block contracts
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Tau Ops chat transcript currently renders message content as plain text rows and lacks deterministic SSR markers for markdown and code-block rendering contracts. This prevents conformance validation for PRD chat expectations around markdown and code presentation.
