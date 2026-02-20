@@ -290,6 +290,7 @@ pub struct TauOpsDashboardChatSnapshot {
     pub memory_search_workspace_id: String,
     pub memory_search_channel_id: String,
     pub memory_search_actor_id: String,
+    pub memory_search_memory_type: String,
     pub memory_search_rows: Vec<TauOpsDashboardMemorySearchRow>,
 }
 
@@ -330,6 +331,7 @@ impl Default for TauOpsDashboardChatSnapshot {
             memory_search_workspace_id: String::new(),
             memory_search_channel_id: String::new(),
             memory_search_actor_id: String::new(),
+            memory_search_memory_type: String::new(),
             memory_search_rows: vec![],
         }
     }
@@ -636,6 +638,7 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     let memory_search_workspace_id = context.chat.memory_search_workspace_id.clone();
     let memory_search_channel_id = context.chat.memory_search_channel_id.clone();
     let memory_search_actor_id = context.chat.memory_search_actor_id.clone();
+    let memory_search_memory_type = context.chat.memory_search_memory_type.clone();
     let memory_search_rows = context.chat.memory_search_rows.clone();
     let memory_result_count_value = memory_search_rows.len().to_string();
     let memory_query_panel_attr = memory_search_query.clone();
@@ -646,6 +649,8 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     let memory_workspace_id_input_value = memory_search_workspace_id.clone();
     let memory_channel_id_input_value = memory_search_channel_id.clone();
     let memory_actor_id_input_value = memory_search_actor_id.clone();
+    let memory_type_panel_attr = memory_search_memory_type.clone();
+    let memory_type_input_value = memory_search_memory_type.clone();
     let memory_result_count_panel_attr = memory_result_count_value.clone();
     let memory_result_count_list_attr = memory_result_count_value.clone();
     let memory_results_view = if memory_search_rows.is_empty() {
@@ -1432,6 +1437,7 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                             data-workspace-id=memory_workspace_id_panel_attr
                             data-channel-id=memory_channel_id_panel_attr
                             data-actor-id=memory_actor_id_panel_attr
+                            data-memory-type=memory_type_panel_attr
                         >
                             <h2>Memory Explorer</h2>
                             <form
@@ -1479,6 +1485,13 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                     type="text"
                                     name="actor_id"
                                     value=memory_actor_id_input_value
+                                />
+                                <label for="tau-ops-memory-type-filter">Memory Type</label>
+                                <input
+                                    id="tau-ops-memory-type-filter"
+                                    type="text"
+                                    name="memory_type"
+                                    value=memory_type_input_value
                                 />
                                 <button id="tau-ops-memory-search-button" type="submit">
                                     Search
@@ -2573,6 +2586,22 @@ mod tests {
         ));
         assert!(html.contains(
             "id=\"tau-ops-memory-actor-filter\" type=\"text\" name=\"actor_id\" value=\"\""
+        ));
+    }
+
+    #[test]
+    fn functional_spec_2913_c01_c03_memory_route_renders_type_filter_control() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Memory,
+            theme: TauOpsDashboardTheme::Light,
+            sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot::default(),
+        });
+
+        assert!(html.contains(
+            "id=\"tau-ops-memory-type-filter\" type=\"text\" name=\"memory_type\" value=\"\""
         ));
     }
 

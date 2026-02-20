@@ -349,6 +349,7 @@ fn collect_tau_ops_dashboard_chat_snapshot(
     let memory_search_workspace_id = controls.requested_memory_workspace_id().unwrap_or_default();
     let memory_search_channel_id = controls.requested_memory_channel_id().unwrap_or_default();
     let memory_search_actor_id = controls.requested_memory_actor_id().unwrap_or_default();
+    let memory_search_memory_type = controls.requested_memory_type().unwrap_or_default();
     let mut memory_search_rows = Vec::new();
 
     if !memory_search_query.trim().is_empty() {
@@ -369,6 +370,10 @@ fn collect_tau_ops_dashboard_chat_snapshot(
             memory_search_rows = search_result
                 .matches
                 .iter()
+                .filter(|entry| {
+                    memory_search_memory_type.is_empty()
+                        || entry.memory_type.as_str() == memory_search_memory_type.as_str()
+                })
                 .map(|entry| TauOpsDashboardMemorySearchRow {
                     memory_id: entry.memory_id.clone(),
                     summary: entry.summary.clone(),
@@ -453,6 +458,7 @@ fn collect_tau_ops_dashboard_chat_snapshot(
         memory_search_workspace_id,
         memory_search_channel_id,
         memory_search_actor_id,
+        memory_search_memory_type,
         memory_search_rows,
     }
 }

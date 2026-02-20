@@ -1337,6 +1337,82 @@ async fn integration_spec_2909_c01_c02_c03_ops_memory_scope_filters_narrow_resul
 }
 
 #[tokio::test]
+async fn integration_spec_2913_c01_c02_c03_ops_memory_type_filter_narrows_results() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state.clone())
+        .await
+        .expect("spawn server");
+    let client = Client::new();
+
+    let session_key = "ops-memory-type-filter";
+    let fixtures = [
+        ("mem-type-fact", "fact"),
+        ("mem-type-goal", "goal"),
+        ("mem-type-decision", "decision"),
+    ];
+
+    for (memory_id, memory_type) in fixtures {
+        let entry_endpoint =
+            expand_memory_entry_template(GATEWAY_MEMORY_ENTRY_ENDPOINT, session_key, memory_id);
+        let create = client
+            .put(format!("http://{addr}{entry_endpoint}"))
+            .bearer_auth("secret")
+            .json(&json!({
+                "summary": "TypeToken",
+                "memory_type": memory_type,
+                "workspace_id": "workspace-a",
+                "channel_id": "channel-alpha",
+                "actor_id": "operator",
+                "policy_gate": MEMORY_WRITE_POLICY_GATE
+            }))
+            .send()
+            .await
+            .expect("create type fixture entry");
+        assert_eq!(create.status(), StatusCode::CREATED);
+    }
+
+    let filtered_response = client
+        .get(format!(
+            "http://{addr}/ops/memory?theme=light&sidebar=collapsed&session={session_key}&query=TypeToken&workspace_id=workspace-a&channel_id=channel-alpha&actor_id=operator&memory_type=fact&limit=25"
+        ))
+        .send()
+        .await
+        .expect("ops memory type-filter request");
+    assert_eq!(filtered_response.status(), StatusCode::OK);
+    let filtered_body = filtered_response
+        .text()
+        .await
+        .expect("read type-filter response body");
+    assert!(filtered_body.contains(
+        "id=\"tau-ops-memory-type-filter\" type=\"text\" name=\"memory_type\" value=\"fact\""
+    ));
+    assert!(filtered_body.contains("id=\"tau-ops-memory-results\" data-result-count=\"1\""));
+    assert!(filtered_body.contains(
+        "id=\"tau-ops-memory-result-row-0\" data-memory-id=\"mem-type-fact\" data-memory-type=\"fact\""
+    ));
+    assert!(!filtered_body.contains("mem-type-goal"));
+    assert!(!filtered_body.contains("mem-type-decision"));
+
+    let no_match_response = client
+        .get(format!(
+            "http://{addr}/ops/memory?theme=light&sidebar=collapsed&session={session_key}&query=TypeToken&workspace_id=workspace-a&channel_id=channel-alpha&actor_id=operator&memory_type=identity"
+        ))
+        .send()
+        .await
+        .expect("ops memory type-filter no-match request");
+    assert_eq!(no_match_response.status(), StatusCode::OK);
+    let no_match_body = no_match_response
+        .text()
+        .await
+        .expect("read type-filter no-match body");
+    assert!(no_match_body.contains("id=\"tau-ops-memory-results\" data-result-count=\"0\""));
+    assert!(no_match_body.contains("id=\"tau-ops-memory-empty-state\" data-empty-state=\"true\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2798_c04_ops_shell_exposes_responsive_and_theme_contract_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");

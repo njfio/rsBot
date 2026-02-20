@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use tau_dashboard_ui::{TauOpsDashboardSidebarState, TauOpsDashboardTheme};
+use tau_memory::runtime::MemoryType;
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub(super) struct OpsShellControlsQuery {
@@ -23,6 +24,8 @@ pub(super) struct OpsShellControlsQuery {
     actor_id: String,
     #[serde(default)]
     limit: String,
+    #[serde(default)]
+    memory_type: String,
 }
 
 impl OpsShellControlsQuery {
@@ -104,6 +107,14 @@ impl OpsShellControlsQuery {
             .ok()
             .map(|value| value.clamp(1, 25))
             .unwrap_or(25)
+    }
+
+    pub(super) fn requested_memory_type(&self) -> Option<String> {
+        let value = self.memory_type.trim();
+        if value.is_empty() {
+            return None;
+        }
+        MemoryType::parse(value).map(|memory_type| memory_type.as_str().to_string())
     }
 }
 
@@ -227,5 +238,20 @@ mod tests {
             ..OpsShellControlsQuery::default()
         };
         assert_eq!(invalid.requested_memory_limit(), 25);
+    }
+
+    #[test]
+    fn unit_requested_memory_type_normalizes_supported_values() {
+        let valid = OpsShellControlsQuery {
+            memory_type: " Goal ".to_string(),
+            ..OpsShellControlsQuery::default()
+        };
+        assert_eq!(valid.requested_memory_type().as_deref(), Some("goal"));
+
+        let invalid = OpsShellControlsQuery {
+            memory_type: "unsupported".to_string(),
+            ..OpsShellControlsQuery::default()
+        };
+        assert_eq!(invalid.requested_memory_type(), None);
     }
 }
