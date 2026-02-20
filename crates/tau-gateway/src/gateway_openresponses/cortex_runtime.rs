@@ -236,6 +236,85 @@ pub(super) fn record_cortex_external_session_closed(
     );
 }
 
+pub(super) fn record_cortex_memory_write_event(state_dir: &Path, session_key: &str, bytes: usize) {
+    let _ = record_cortex_observer_event(
+        state_dir,
+        "memory.write",
+        json!({
+            "session_key": session_key,
+            "bytes": bytes,
+        }),
+    );
+}
+
+pub(super) fn record_cortex_memory_entry_write_event(
+    state_dir: &Path,
+    session_key: &str,
+    entry_id: &str,
+    created: bool,
+) {
+    let _ = record_cortex_observer_event(
+        state_dir,
+        "memory.entry_write",
+        json!({
+            "session_key": session_key,
+            "entry_id": entry_id,
+            "created": created,
+        }),
+    );
+}
+
+pub(super) fn record_cortex_memory_entry_delete_event(
+    state_dir: &Path,
+    session_key: &str,
+    entry_id: &str,
+    deleted: bool,
+) {
+    let _ = record_cortex_observer_event(
+        state_dir,
+        "memory.entry_delete",
+        json!({
+            "session_key": session_key,
+            "entry_id": entry_id,
+            "deleted": deleted,
+        }),
+    );
+}
+
+pub(super) fn record_cortex_external_progress_event(
+    state_dir: &Path,
+    session_id: &str,
+    sequence_id: u64,
+    message: &str,
+) {
+    let _ = record_cortex_observer_event(
+        state_dir,
+        "external_coding_agent.progress",
+        json!({
+            "session_id": session_id,
+            "sequence_id": sequence_id,
+            "message": message,
+        }),
+    );
+}
+
+pub(super) fn record_cortex_external_followup_event(
+    state_dir: &Path,
+    session_id: &str,
+    sequence_id: u64,
+    message: &str,
+) {
+    let _ = record_cortex_observer_event(
+        state_dir,
+        "external_coding_agent.followup_queued",
+        json!({
+            "session_id": session_id,
+            "sequence_id": sequence_id,
+            "message": message,
+        }),
+    );
+}
+
 fn load_cortex_status_report(
     state_dir: &Path,
 ) -> Result<GatewayCortexStatusReport, OpenResponsesApiError> {

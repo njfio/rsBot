@@ -81,9 +81,11 @@ use auth_runtime::{
     issue_gateway_session_token,
 };
 use cortex_runtime::{
-    handle_cortex_chat, handle_cortex_status, record_cortex_external_session_closed,
-    record_cortex_external_session_opened, record_cortex_session_append_event,
-    record_cortex_session_reset_event,
+    handle_cortex_chat, handle_cortex_status, record_cortex_external_followup_event,
+    record_cortex_external_progress_event, record_cortex_external_session_closed,
+    record_cortex_external_session_opened, record_cortex_memory_entry_delete_event,
+    record_cortex_memory_entry_write_event, record_cortex_memory_write_event,
+    record_cortex_session_append_event, record_cortex_session_reset_event,
 };
 use dashboard_status::{
     apply_gateway_dashboard_action, collect_gateway_dashboard_snapshot,
@@ -1516,6 +1518,12 @@ async fn handle_external_coding_agent_session_progress(
         Ok(event) => event,
         Err(error) => return map_external_coding_agent_bridge_error(error).into_response(),
     };
+    record_cortex_external_progress_event(
+        &state.config.state_dir,
+        session_id.as_str(),
+        event.sequence_id,
+        event.message.as_str(),
+    );
     let session = state
         .external_coding_agent_bridge
         .snapshot(session_id.as_str())
@@ -1554,6 +1562,12 @@ async fn handle_external_coding_agent_session_followup(
         Ok(event) => event,
         Err(error) => return map_external_coding_agent_bridge_error(error).into_response(),
     };
+    record_cortex_external_followup_event(
+        &state.config.state_dir,
+        session_id.as_str(),
+        event.sequence_id,
+        event.message.as_str(),
+    );
     let session = state
         .external_coding_agent_bridge
         .snapshot(session_id.as_str())
@@ -2415,6 +2429,7 @@ async fn handle_gateway_memory_write(
     }
 
     state.record_ui_telemetry_event("memory", "write", "memory_write_applied");
+    record_cortex_memory_write_event(&state.config.state_dir, session_key.as_str(), content.len());
     (
         StatusCode::OK,
         Json(json!({
@@ -2565,6 +2580,12 @@ async fn handle_gateway_memory_entry_write(
     };
 
     state.record_ui_telemetry_event("memory", "entry_write", "memory_entry_write_applied");
+    record_cortex_memory_entry_write_event(
+        &state.config.state_dir,
+        session_key.as_str(),
+        entry_id.as_str(),
+        write_result.created,
+    );
     (
         if write_result.created {
             StatusCode::CREATED
@@ -2623,6 +2644,12 @@ async fn handle_gateway_memory_entry_delete(
                 "memory",
                 "entry_delete",
                 "memory_entry_delete_applied",
+            );
+            record_cortex_memory_entry_delete_event(
+                &state.config.state_dir,
+                session_key.as_str(),
+                entry_id.as_str(),
+                true,
             );
             (
                 StatusCode::OK,
