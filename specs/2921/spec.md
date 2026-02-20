@@ -1,6 +1,6 @@
 # Spec: Issue #2921 - ops memory edit-entry contracts
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 The PRD requires editing existing memory entries with all fields from the ops dashboard, but `/ops/memory` currently supports create + search/filter contracts only and has no deterministic edit-entry contracts.
