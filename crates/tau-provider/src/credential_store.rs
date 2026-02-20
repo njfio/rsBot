@@ -8,23 +8,29 @@ use std::{
     collections::BTreeMap,
     fmt,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng, Payload},
+    Aes256Gcm,
+};
 use anyhow::{anyhow, bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tau_ai::Provider;
 use tau_cli::{Cli, CliCredentialStoreEncryptionMode};
-use tau_core::{current_unix_timestamp, write_text_atomic};
+use tau_core::write_text_atomic;
 
 use crate::types::{CredentialStoreEncryptionMode, ProviderAuthMethod};
 
 const CREDENTIAL_STORE_SCHEMA_VERSION: u32 = 1;
-const CREDENTIAL_STORE_ENCRYPTED_PREFIX: &str = "enc:v1:";
-const CREDENTIAL_STORE_NONCE_BYTES: usize = 16;
-const CREDENTIAL_STORE_TAG_BYTES: usize = 32;
+const CREDENTIAL_STORE_ENCRYPTED_V1_PREFIX: &str = "enc:v1:";
+const CREDENTIAL_STORE_ENCRYPTED_V2_PREFIX: &str = "enc:v2:";
+const CREDENTIAL_STORE_LEGACY_NONCE_BYTES: usize = 16;
+const CREDENTIAL_STORE_LEGACY_TAG_BYTES: usize = 32;
+const CREDENTIAL_STORE_AES_GCM_NONCE_BYTES: usize = 12;
+const CREDENTIAL_STORE_AES_GCM_AAD: &[u8] = b"tau-credential-store-v2";
 const CREDENTIAL_STORE_MACHINE_KEY_CONTEXT: &str = "tau-credential-store-machine-key-v1";
 const CREDENTIAL_STORE_MACHINE_ID_CANDIDATE_PATHS: [&str; 2] =
     ["/etc/machine-id", "/var/lib/dbus/machine-id"];
@@ -305,21 +311,6 @@ fn read_machine_id_file() -> Option<String> {
     None
 }
 
-fn derive_credential_store_nonce() -> [u8; CREDENTIAL_STORE_NONCE_BYTES] {
-    let mut seed = Vec::new();
-    seed.extend_from_slice(&current_unix_timestamp().to_le_bytes());
-    seed.extend_from_slice(&(std::process::id() as u64).to_le_bytes());
-    let now_nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    seed.extend_from_slice(&now_nanos.to_le_bytes());
-    let digest = Sha256::digest(seed);
-    let mut nonce = [0u8; CREDENTIAL_STORE_NONCE_BYTES];
-    nonce.copy_from_slice(&digest[..CREDENTIAL_STORE_NONCE_BYTES]);
-    nonce
-}
-
 fn xor_with_keyed_stream(data: &[u8], key: &[u8; 32], nonce: &[u8]) -> Vec<u8> {
     let mut output = Vec::with_capacity(data.len());
     let mut offset = 0usize;
@@ -342,12 +333,12 @@ fn xor_with_keyed_stream(data: &[u8], key: &[u8; 32], nonce: &[u8]) -> Vec<u8> {
     output
 }
 
-fn credential_store_tag(key: &[u8; 32], nonce: &[u8], ciphertext: &[u8]) -> [u8; 32] {
+fn legacy_credential_store_tag(key: &[u8; 32], nonce: &[u8], ciphertext: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(key);
     hasher.update(nonce);
     hasher.update(ciphertext);
-    hasher.update(b"tau-credential-store-v1");
+    hasher.update(b"tau-credential-store-legacy-v1");
     let digest = hasher.finalize();
     let mut tag = [0u8; 32];
     tag.copy_from_slice(&digest);
@@ -382,25 +373,94 @@ pub fn encrypt_credential_store_secret(
 
     match mode {
         CredentialStoreEncryptionMode::None => Ok(secret.to_string()),
-        CredentialStoreEncryptionMode::Keyed => {
-            let key = derive_credential_store_key_material(key)?;
-            let nonce = derive_credential_store_nonce();
-            let ciphertext = xor_with_keyed_stream(secret.as_bytes(), &key, &nonce);
-            let tag = credential_store_tag(&key, &nonce, &ciphertext);
-
-            let mut payload = Vec::with_capacity(
-                CREDENTIAL_STORE_NONCE_BYTES + CREDENTIAL_STORE_TAG_BYTES + ciphertext.len(),
-            );
-            payload.extend_from_slice(&nonce);
-            payload.extend_from_slice(&tag);
-            payload.extend_from_slice(&ciphertext);
-
-            Ok(format!(
-                "{CREDENTIAL_STORE_ENCRYPTED_PREFIX}{}",
-                BASE64_STANDARD.encode(payload)
-            ))
-        }
+        CredentialStoreEncryptionMode::Keyed => encrypt_credential_store_secret_v2(secret, key),
     }
+}
+
+fn encrypt_credential_store_secret_v2(secret: &str, key: Option<&str>) -> Result<String> {
+    let key_material = derive_credential_store_key_material(key)?;
+    let cipher = Aes256Gcm::new_from_slice(&key_material)
+        .map_err(|_| anyhow!("credential key material has invalid length"))?;
+    let mut nonce = [0u8; CREDENTIAL_STORE_AES_GCM_NONCE_BYTES];
+    use aes_gcm::aead::rand_core::RngCore as _;
+    OsRng.fill_bytes(&mut nonce);
+
+    let ciphertext = cipher
+        .encrypt(
+            (&nonce).into(),
+            Payload {
+                msg: secret.as_bytes(),
+                aad: CREDENTIAL_STORE_AES_GCM_AAD,
+            },
+        )
+        .map_err(|_| anyhow!("credential payload encryption failed"))?;
+
+    let mut payload = Vec::with_capacity(CREDENTIAL_STORE_AES_GCM_NONCE_BYTES + ciphertext.len());
+    payload.extend_from_slice(&nonce);
+    payload.extend_from_slice(&ciphertext);
+    Ok(format!(
+        "{CREDENTIAL_STORE_ENCRYPTED_V2_PREFIX}{}",
+        BASE64_STANDARD.encode(payload)
+    ))
+}
+
+fn decrypt_credential_store_secret_v2(payload: &str, key: Option<&str>) -> Result<String> {
+    let key_material = derive_credential_store_key_material(key)?;
+    let cipher = Aes256Gcm::new_from_slice(&key_material)
+        .map_err(|_| anyhow!("credential key material has invalid length"))?;
+    let raw = BASE64_STANDARD
+        .decode(payload)
+        .map_err(|_| anyhow!("credential payload encoding is invalid"))?;
+    if raw.len() <= CREDENTIAL_STORE_AES_GCM_NONCE_BYTES {
+        bail!("credential payload is truncated");
+    }
+
+    let nonce = &raw[..CREDENTIAL_STORE_AES_GCM_NONCE_BYTES];
+    let ciphertext = &raw[CREDENTIAL_STORE_AES_GCM_NONCE_BYTES..];
+    let plaintext = cipher
+        .decrypt(
+            nonce.into(),
+            Payload {
+                msg: ciphertext,
+                aad: CREDENTIAL_STORE_AES_GCM_AAD,
+            },
+        )
+        .map_err(|_| anyhow!("credential payload integrity check failed"))?;
+    let secret = String::from_utf8(plaintext)
+        .map_err(|_| anyhow!("credential payload is not valid UTF-8"))?;
+    if secret.trim().is_empty() {
+        bail!("credential payload resolves to an empty secret");
+    }
+    Ok(secret)
+}
+
+fn decrypt_credential_store_secret_legacy(payload: &str, key: Option<&str>) -> Result<String> {
+    let key_material = derive_credential_store_key_material(key)?;
+    let raw = BASE64_STANDARD
+        .decode(payload)
+        .map_err(|_| anyhow!("credential payload encoding is invalid"))?;
+    if raw.len() < CREDENTIAL_STORE_LEGACY_NONCE_BYTES + CREDENTIAL_STORE_LEGACY_TAG_BYTES {
+        bail!("credential payload is truncated");
+    }
+
+    let nonce_end = CREDENTIAL_STORE_LEGACY_NONCE_BYTES;
+    let tag_end = nonce_end + CREDENTIAL_STORE_LEGACY_TAG_BYTES;
+    let nonce = &raw[..nonce_end];
+    let tag = &raw[nonce_end..tag_end];
+    let ciphertext = &raw[tag_end..];
+
+    let expected_tag = legacy_credential_store_tag(&key_material, nonce, ciphertext);
+    if !timing_safe_equal(tag, &expected_tag) {
+        bail!("credential payload integrity check failed");
+    }
+
+    let plaintext = xor_with_keyed_stream(ciphertext, &key_material, nonce);
+    let secret = String::from_utf8(plaintext)
+        .map_err(|_| anyhow!("credential payload is not valid UTF-8"))?;
+    if secret.trim().is_empty() {
+        bail!("credential payload resolves to an empty secret");
+    }
+    Ok(secret)
 }
 
 /// Public `fn` `decrypt_credential_store_secret` in `tau-provider`.
@@ -422,35 +482,13 @@ pub fn decrypt_credential_store_secret(
             Ok(value.to_string())
         }
         CredentialStoreEncryptionMode::Keyed => {
-            let key = derive_credential_store_key_material(key)?;
-            let payload = encoded
-                .strip_prefix(CREDENTIAL_STORE_ENCRYPTED_PREFIX)
-                .ok_or_else(|| anyhow!("credential payload prefix is invalid"))?;
-            let raw = BASE64_STANDARD
-                .decode(payload)
-                .map_err(|_| anyhow!("credential payload encoding is invalid"))?;
-            if raw.len() < CREDENTIAL_STORE_NONCE_BYTES + CREDENTIAL_STORE_TAG_BYTES {
-                bail!("credential payload is truncated");
+            if let Some(payload) = encoded.strip_prefix(CREDENTIAL_STORE_ENCRYPTED_V2_PREFIX) {
+                return decrypt_credential_store_secret_v2(payload, key);
             }
-
-            let nonce_end = CREDENTIAL_STORE_NONCE_BYTES;
-            let tag_end = nonce_end + CREDENTIAL_STORE_TAG_BYTES;
-            let nonce = &raw[..nonce_end];
-            let tag = &raw[nonce_end..tag_end];
-            let ciphertext = &raw[tag_end..];
-
-            let expected_tag = credential_store_tag(&key, nonce, ciphertext);
-            if !timing_safe_equal(tag, &expected_tag) {
-                bail!("credential payload integrity check failed");
+            if let Some(payload) = encoded.strip_prefix(CREDENTIAL_STORE_ENCRYPTED_V1_PREFIX) {
+                return decrypt_credential_store_secret_legacy(payload, key);
             }
-
-            let plaintext = xor_with_keyed_stream(ciphertext, &key, nonce);
-            let secret = String::from_utf8(plaintext)
-                .map_err(|_| anyhow!("credential payload is not valid UTF-8"))?;
-            if secret.trim().is_empty() {
-                bail!("credential payload resolves to an empty secret");
-            }
-            Ok(secret)
+            bail!("credential payload prefix is invalid");
         }
     }
 }
@@ -676,4 +714,95 @@ pub fn reauth_required_error(provider: Provider, reason: &str) -> anyhow::Error 
         "provider '{}' requires re-authentication: {reason}",
         provider.as_str()
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::Engine as _;
+
+    use super::{
+        decrypt_credential_store_secret, encrypt_credential_store_secret, xor_with_keyed_stream,
+        CredentialStoreEncryptionMode, BASE64_STANDARD, CREDENTIAL_STORE_ENCRYPTED_V1_PREFIX,
+        CREDENTIAL_STORE_LEGACY_NONCE_BYTES,
+    };
+    use super::{derive_credential_store_key_material, legacy_credential_store_tag};
+
+    #[test]
+    fn spec_2774_c02_keyed_payload_uses_v2_prefix_and_roundtrips() {
+        let encoded = encrypt_credential_store_secret(
+            "super-secret-token",
+            CredentialStoreEncryptionMode::Keyed,
+            Some("credential-store-passphrase"),
+        )
+        .expect("keyed encryption must succeed");
+        assert!(
+            encoded.starts_with("enc:v2:"),
+            "expected v2 envelope prefix for keyed payloads"
+        );
+        let decoded = decrypt_credential_store_secret(
+            &encoded,
+            CredentialStoreEncryptionMode::Keyed,
+            Some("credential-store-passphrase"),
+        )
+        .expect("keyed decrypt must roundtrip");
+        assert_eq!(decoded, "super-secret-token");
+    }
+
+    #[test]
+    fn regression_spec_2774_c03_legacy_v1_payload_still_decrypts() {
+        let encoded = build_legacy_v1_payload("legacy-secret", Some("credential-store-passphrase"));
+        let decoded = decrypt_credential_store_secret(
+            &encoded,
+            CredentialStoreEncryptionMode::Keyed,
+            Some("credential-store-passphrase"),
+        )
+        .expect("legacy v1 payload must remain readable");
+        assert_eq!(decoded, "legacy-secret");
+    }
+
+    #[test]
+    fn regression_spec_2774_c04_tampered_v2_payload_fails_closed() {
+        let encoded = encrypt_credential_store_secret(
+            "super-secret-token",
+            CredentialStoreEncryptionMode::Keyed,
+            Some("credential-store-passphrase"),
+        )
+        .expect("keyed encryption must succeed");
+        let payload = encoded
+            .strip_prefix("enc:v2:")
+            .expect("v2 prefix should be present for keyed payload");
+        let mut raw = BASE64_STANDARD
+            .decode(payload)
+            .expect("payload must be base64");
+        let last = raw
+            .last_mut()
+            .expect("encrypted payload should include at least one ciphertext byte");
+        *last ^= 0xAA;
+        let tampered = format!("enc:v2:{}", BASE64_STANDARD.encode(raw));
+        let error = decrypt_credential_store_secret(
+            &tampered,
+            CredentialStoreEncryptionMode::Keyed,
+            Some("credential-store-passphrase"),
+        )
+        .expect_err("tampered payload must fail closed");
+        assert!(
+            error.to_string().contains("integrity check failed"),
+            "expected integrity failure, got: {error}"
+        );
+    }
+
+    fn build_legacy_v1_payload(secret: &str, key: Option<&str>) -> String {
+        let key_material = derive_credential_store_key_material(key).expect("derive key");
+        let nonce = [7u8; CREDENTIAL_STORE_LEGACY_NONCE_BYTES];
+        let ciphertext = xor_with_keyed_stream(secret.as_bytes(), &key_material, &nonce);
+        let tag = legacy_credential_store_tag(&key_material, &nonce, &ciphertext);
+        let mut payload = Vec::with_capacity(nonce.len() + tag.len() + ciphertext.len());
+        payload.extend_from_slice(&nonce);
+        payload.extend_from_slice(&tag);
+        payload.extend_from_slice(&ciphertext);
+        format!(
+            "{CREDENTIAL_STORE_ENCRYPTED_V1_PREFIX}{}",
+            BASE64_STANDARD.encode(payload)
+        )
+    }
 }
