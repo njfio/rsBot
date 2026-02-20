@@ -2201,6 +2201,156 @@ async fn integration_spec_2846_c02_c03_ops_session_detail_shell_renders_graph_no
 }
 
 #[tokio::test]
+async fn functional_spec_2885_c01_ops_session_detail_shell_exposes_row_level_branch_form_markers() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    for message in ["branch source one", "branch source two"] {
+        let send_response = client
+            .post(format!("http://{addr}/ops/chat/send"))
+            .form(&[
+                ("session_key", "session-branch-source"),
+                ("message", message),
+                ("theme", "dark"),
+                ("sidebar", "expanded"),
+            ])
+            .send()
+            .await
+            .expect("ops chat send request");
+        assert_eq!(send_response.status(), StatusCode::SEE_OTHER);
+    }
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/sessions/session-branch-source?theme=dark&sidebar=expanded"
+        ))
+        .send()
+        .await
+        .expect("ops session detail request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops session detail body");
+
+    assert!(body.contains(
+        "id=\"tau-ops-session-branch-form-0\" action=\"/ops/sessions/branch\" method=\"post\""
+    ));
+    assert!(body.contains("id=\"tau-ops-session-branch-source-session-key-0\" type=\"hidden\" name=\"source_session_key\" value=\"session-branch-source\""));
+    assert!(
+        body.contains("id=\"tau-ops-session-branch-entry-id-0\" type=\"hidden\" name=\"entry_id\"")
+    );
+    assert!(body.contains("id=\"tau-ops-session-branch-target-session-key-0\" type=\"text\" name=\"target_session_key\" value=\"\""));
+    assert!(body.contains(
+        "id=\"tau-ops-session-branch-theme-0\" type=\"hidden\" name=\"theme\" value=\"dark\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-session-branch-sidebar-0\" type=\"hidden\" name=\"sidebar\" value=\"expanded\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_spec_2885_c02_c03_c04_ops_sessions_branch_creates_lineage_derived_target_session(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state.clone())
+        .await
+        .expect("spawn server");
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    for message in ["branch source one", "branch source two"] {
+        let send_response = client
+            .post(format!("http://{addr}/ops/chat/send"))
+            .form(&[
+                ("session_key", "session-branch-source"),
+                ("message", message),
+                ("theme", "light"),
+                ("sidebar", "collapsed"),
+            ])
+            .send()
+            .await
+            .expect("ops chat send request");
+        assert_eq!(send_response.status(), StatusCode::SEE_OTHER);
+    }
+
+    let source_path = gateway_session_path(&state.config.state_dir, "session-branch-source");
+    let source_store = SessionStore::load(&source_path).expect("load source session store");
+    let source_entries = source_store
+        .lineage_entries(source_store.head_id())
+        .expect("source lineage entries");
+    let selected_entry_id = source_entries
+        .iter()
+        .find(|entry| entry.message.text_content() == "branch source one")
+        .map(|entry| entry.id)
+        .expect("selected entry id");
+    let selected_entry_id_value = selected_entry_id.to_string();
+
+    let branch_response = client
+        .post(format!("http://{addr}/ops/sessions/branch"))
+        .form(&[
+            ("source_session_key", "session-branch-source"),
+            ("entry_id", selected_entry_id_value.as_str()),
+            ("target_session_key", "session-branch-target"),
+            ("theme", "light"),
+            ("sidebar", "collapsed"),
+        ])
+        .send()
+        .await
+        .expect("ops session branch request");
+    assert_eq!(branch_response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        branch_response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("/ops/chat?theme=light&sidebar=collapsed&session=session-branch-target")
+    );
+
+    let target_path = gateway_session_path(&state.config.state_dir, "session-branch-target");
+    let target_store = SessionStore::load(&target_path).expect("load target session store");
+    let target_validation = target_store.validation_report();
+    assert!(target_validation.is_valid());
+
+    let target_lineage = target_store
+        .lineage_messages(target_store.head_id())
+        .expect("target lineage messages");
+    assert!(target_lineage
+        .iter()
+        .any(|message| message.text_content() == "branch source one"));
+    assert!(!target_lineage
+        .iter()
+        .any(|message| message.text_content() == "branch source two"));
+
+    let chat_response = client
+        .get(format!(
+            "http://{addr}/ops/chat?theme=light&sidebar=collapsed&session=session-branch-target"
+        ))
+        .send()
+        .await
+        .expect("ops chat render request");
+    assert_eq!(chat_response.status(), StatusCode::OK);
+    let chat_body = chat_response.text().await.expect("read ops chat body");
+    assert!(chat_body.contains(
+        "id=\"tau-ops-chat-session-selector\" data-active-session-key=\"session-branch-target\""
+    ));
+    assert!(chat_body.contains(
+        "id=\"tau-ops-chat-send-form\" action=\"/ops/chat/send\" method=\"post\" data-session-key=\"session-branch-target\""
+    ));
+    assert!(chat_body.contains("branch source one"));
+    assert!(!chat_body.contains("branch source two"));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2806_c01_c02_c03_ops_shell_command_center_markers_reflect_dashboard_snapshot(
 ) {
     let temp = tempdir().expect("tempdir");

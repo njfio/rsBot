@@ -108,6 +108,64 @@ impl OpsDashboardChatNewSessionForm {
     }
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct OpsDashboardSessionBranchForm {
+    #[serde(default)]
+    source_session_key: String,
+    #[serde(default)]
+    entry_id: String,
+    #[serde(default)]
+    target_session_key: String,
+    #[serde(default)]
+    theme: String,
+    #[serde(default)]
+    sidebar: String,
+}
+
+impl OpsDashboardSessionBranchForm {
+    fn resolved_source_session_key(&self) -> String {
+        let requested = self.source_session_key.trim();
+        let resolved = if requested.is_empty() {
+            DEFAULT_SESSION_KEY
+        } else {
+            requested
+        };
+        sanitize_session_key(resolved)
+    }
+
+    fn resolved_target_session_key(
+        &self,
+        source_session_key: &str,
+        entry_id: Option<u64>,
+    ) -> String {
+        let requested = self.target_session_key.trim();
+        if !requested.is_empty() {
+            return sanitize_session_key(requested);
+        }
+        let fallback = match entry_id {
+            Some(entry_id) => format!("{source_session_key}-branch-{entry_id}"),
+            None => format!("{source_session_key}-branch"),
+        };
+        sanitize_session_key(fallback.as_str())
+    }
+
+    fn resolved_entry_id(&self) -> Option<u64> {
+        let requested = self.entry_id.trim();
+        if requested.is_empty() {
+            return None;
+        }
+        requested.parse::<u64>().ok()
+    }
+
+    fn resolved_theme(&self) -> TauOpsDashboardTheme {
+        resolve_chat_theme(self.theme.as_str())
+    }
+
+    fn resolved_sidebar_state(&self) -> TauOpsDashboardSidebarState {
+        resolve_chat_sidebar_state(self.sidebar.as_str())
+    }
+}
+
 fn resolve_ops_chat_session_key(
     controls: &OpsShellControlsQuery,
     detail_session_key: Option<&str>,
@@ -398,6 +456,80 @@ pub(super) async fn handle_ops_dashboard_chat_send(
         session_key.as_str(),
         new_head,
         store.entries().len(),
+    );
+    Redirect::to(redirect_path.as_str()).into_response()
+}
+
+pub(super) async fn handle_ops_dashboard_sessions_branch(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    Form(form): Form<OpsDashboardSessionBranchForm>,
+) -> Response {
+    let source_session_key = form.resolved_source_session_key();
+    let selected_entry_id = form.resolved_entry_id();
+    let redirect_theme = form.resolved_theme();
+    let redirect_sidebar_state = form.resolved_sidebar_state();
+    let target_session_key =
+        form.resolved_target_session_key(source_session_key.as_str(), selected_entry_id);
+
+    if target_session_key.trim().is_empty() {
+        let source_redirect_path = build_ops_chat_redirect_path(
+            redirect_theme,
+            redirect_sidebar_state,
+            source_session_key.as_str(),
+        );
+        return Redirect::to(source_redirect_path.as_str()).into_response();
+    }
+
+    let Some(selected_entry_id) = selected_entry_id else {
+        let source_redirect_path = build_ops_chat_redirect_path(
+            redirect_theme,
+            redirect_sidebar_state,
+            source_session_key.as_str(),
+        );
+        return Redirect::to(source_redirect_path.as_str()).into_response();
+    };
+
+    let source_session_path =
+        gateway_session_path(&state.config.state_dir, source_session_key.as_str());
+    let mut source_store = match SessionStore::load(&source_session_path) {
+        Ok(store) => store,
+        Err(error) => {
+            return OpenResponsesApiError::internal(format!(
+                "failed to load source session '{}': {error}",
+                source_session_path.display()
+            ))
+            .into_response();
+        }
+    };
+    source_store.set_lock_policy(
+        state.config.session_lock_wait_ms,
+        state.config.session_lock_stale_ms,
+    );
+
+    if !source_store.contains(selected_entry_id) {
+        let source_redirect_path = build_ops_chat_redirect_path(
+            redirect_theme,
+            redirect_sidebar_state,
+            source_session_key.as_str(),
+        );
+        return Redirect::to(source_redirect_path.as_str()).into_response();
+    }
+
+    let target_session_path =
+        gateway_session_path(&state.config.state_dir, target_session_key.as_str());
+    if let Err(error) = source_store.export_lineage(Some(selected_entry_id), &target_session_path) {
+        return OpenResponsesApiError::internal(format!(
+            "failed to export branch session '{}': {error}",
+            target_session_path.display()
+        ))
+        .into_response();
+    }
+
+    state.record_ui_telemetry_event("sessions", "branch", "session_branch_created");
+    let redirect_path = build_ops_chat_redirect_path(
+        redirect_theme,
+        redirect_sidebar_state,
+        target_session_key.as_str(),
     );
     Redirect::to(redirect_path.as_str()).into_response()
 }

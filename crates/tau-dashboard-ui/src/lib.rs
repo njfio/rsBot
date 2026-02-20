@@ -617,13 +617,66 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                 .map(|(index, row)| {
                     let row_id = format!("tau-ops-session-message-row-{index}");
                     let entry_id = row.entry_id.to_string();
+                    let row_entry_id_value = entry_id.clone();
+                    let form_entry_id_value = entry_id.clone();
+                    let hidden_entry_id_value = entry_id.clone();
+                    let branch_form_id = format!("tau-ops-session-branch-form-{index}");
+                    let branch_source_id =
+                        format!("tau-ops-session-branch-source-session-key-{index}");
+                    let branch_entry_id = format!("tau-ops-session-branch-entry-id-{index}");
+                    let branch_target_id =
+                        format!("tau-ops-session-branch-target-session-key-{index}");
+                    let branch_theme_id = format!("tau-ops-session-branch-theme-{index}");
+                    let branch_sidebar_id = format!("tau-ops-session-branch-sidebar-{index}");
+                    let branch_submit_id = format!("tau-ops-session-branch-submit-{index}");
                     view! {
                         <li
                             id=row_id
-                            data-entry-id=entry_id
+                            data-entry-id=row_entry_id_value
                             data-message-role=row.role.clone()
                         >
                             {row.content.clone()}
+                            <form
+                                id=branch_form_id
+                                action="/ops/sessions/branch"
+                                method="post"
+                                data-source-session-key=chat_session_key.clone()
+                                data-entry-id=form_entry_id_value
+                            >
+                                <input
+                                    id=branch_source_id
+                                    type="hidden"
+                                    name="source_session_key"
+                                    value=chat_session_key.clone()
+                                />
+                                <input
+                                    id=branch_entry_id
+                                    type="hidden"
+                                    name="entry_id"
+                                    value=hidden_entry_id_value
+                                />
+                                <label for=branch_target_id.clone()>Branch Session Key</label>
+                                <input
+                                    id=branch_target_id
+                                    type="text"
+                                    name="target_session_key"
+                                    value=""
+                                />
+                                <input id=branch_theme_id type="hidden" name="theme" value=theme_attr />
+                                <input
+                                    id=branch_sidebar_id
+                                    type="hidden"
+                                    name="sidebar"
+                                    value=sidebar_state_attr
+                                />
+                                <button
+                                    id=branch_submit_id
+                                    type="submit"
+                                    data-confirmation-required="true"
+                                >
+                                    Branch Session
+                                </button>
+                            </form>
                         </li>
                     }
                 })
@@ -2398,6 +2451,57 @@ mod tests {
         ));
         assert!(html.contains(
             "id=\"tau-ops-session-graph-edge-1\" data-source-entry-id=\"2\" data-target-entry-id=\"3\""
+        ));
+    }
+
+    #[test]
+    fn functional_spec_2885_c01_sessions_route_renders_timeline_row_branch_form_contracts() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Sessions,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot {
+                active_session_key: "session-branch-source".to_string(),
+                session_detail_visible: true,
+                session_detail_route: "/ops/sessions/session-branch-source".to_string(),
+                session_detail_timeline_rows: vec![
+                    TauOpsDashboardSessionTimelineRow {
+                        entry_id: 7,
+                        role: "user".to_string(),
+                        content: "branch anchor message".to_string(),
+                    },
+                    TauOpsDashboardSessionTimelineRow {
+                        entry_id: 8,
+                        role: "assistant".to_string(),
+                        content: "downstream reply".to_string(),
+                    },
+                ],
+                ..TauOpsDashboardChatSnapshot::default()
+            },
+        });
+
+        assert!(html.contains(
+            "id=\"tau-ops-session-branch-form-0\" action=\"/ops/sessions/branch\" method=\"post\" data-source-session-key=\"session-branch-source\" data-entry-id=\"7\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-session-branch-source-session-key-0\" type=\"hidden\" name=\"source_session_key\" value=\"session-branch-source\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-session-branch-entry-id-0\" type=\"hidden\" name=\"entry_id\" value=\"7\""
+        ));
+        assert!(
+            html.contains("id=\"tau-ops-session-branch-target-session-key-0\" type=\"text\" name=\"target_session_key\" value=\"\"")
+        );
+        assert!(html.contains(
+            "id=\"tau-ops-session-branch-theme-0\" type=\"hidden\" name=\"theme\" value=\"dark\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-session-branch-sidebar-0\" type=\"hidden\" name=\"sidebar\" value=\"expanded\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-session-branch-submit-0\" type=\"submit\" data-confirmation-required=\"true\""
         ));
     }
 
