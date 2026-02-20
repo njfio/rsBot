@@ -234,6 +234,20 @@ pub struct TauOpsDashboardSessionTimelineRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TauOpsDashboardSessionGraphNodeRow` in `tau-dashboard-ui`.
+pub struct TauOpsDashboardSessionGraphNodeRow {
+    pub entry_id: u64,
+    pub role: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TauOpsDashboardSessionGraphEdgeRow` in `tau-dashboard-ui`.
+pub struct TauOpsDashboardSessionGraphEdgeRow {
+    pub source_entry_id: u64,
+    pub target_entry_id: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Public struct `TauOpsDashboardChatSnapshot` in `tau-dashboard-ui`.
 pub struct TauOpsDashboardChatSnapshot {
     pub active_session_key: String,
@@ -253,6 +267,8 @@ pub struct TauOpsDashboardChatSnapshot {
     pub session_detail_usage_total_tokens: u64,
     pub session_detail_usage_estimated_cost_usd: String,
     pub session_detail_timeline_rows: Vec<TauOpsDashboardSessionTimelineRow>,
+    pub session_graph_node_rows: Vec<TauOpsDashboardSessionGraphNodeRow>,
+    pub session_graph_edge_rows: Vec<TauOpsDashboardSessionGraphEdgeRow>,
 }
 
 impl Default for TauOpsDashboardChatSnapshot {
@@ -278,6 +294,8 @@ impl Default for TauOpsDashboardChatSnapshot {
             session_detail_usage_total_tokens: 0,
             session_detail_usage_estimated_cost_usd: "0.000000".to_string(),
             session_detail_timeline_rows: vec![],
+            session_graph_node_rows: vec![],
+            session_graph_edge_rows: vec![],
         }
     }
 }
@@ -507,6 +525,7 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
             "true"
         };
     let session_detail_route = context.chat.session_detail_route.clone();
+    let session_graph_route = session_detail_route.clone();
     let session_detail_validation_entries =
         context.chat.session_detail_validation_entries.to_string();
     let session_detail_validation_duplicates = context
@@ -561,6 +580,47 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                 .collect_view(),
         )
     };
+    let session_graph_node_rows = context.chat.session_graph_node_rows.clone();
+    let session_graph_edge_rows = context.chat.session_graph_edge_rows.clone();
+    let session_graph_node_count = session_graph_node_rows.len().to_string();
+    let session_graph_edge_count = session_graph_edge_rows.len().to_string();
+    let session_graph_view = if session_graph_node_rows.is_empty() {
+        leptos::either::Either::Left(view! {
+            <li id="tau-ops-session-graph-empty-state" data-empty-state="true">
+                No session graph nodes yet.
+            </li>
+        })
+    } else {
+        leptos::either::Either::Right(
+            session_graph_node_rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| {
+                    let row_id = format!("tau-ops-session-graph-node-{index}");
+                    let entry_id = row.entry_id.to_string();
+                    view! {
+                        <li id=row_id data-entry-id=entry_id data-message-role=row.role.clone()></li>
+                    }
+                })
+                .collect_view(),
+        )
+    };
+    let session_graph_edges_view = session_graph_edge_rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let row_id = format!("tau-ops-session-graph-edge-{index}");
+            let source_entry_id = row.source_entry_id.to_string();
+            let target_entry_id = row.target_entry_id.to_string();
+            view! {
+                <li
+                    id=row_id
+                    data-source-entry-id=source_entry_id
+                    data-target-entry-id=target_entry_id
+                ></li>
+            }
+        })
+        .collect_view();
     let chat_session_option_count_value = chat_session_options.len().to_string();
     let chat_message_count_value = chat_message_rows.len().to_string();
     let chat_send_form_action = context.chat.send_form_action.clone();
@@ -903,6 +963,20 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                 {session_detail_timeline_view}
                             </ul>
                         </section>
+                        <section
+                            id="tau-ops-session-graph-panel"
+                            data-route=session_graph_route
+                            data-session-key=chat_session_key.clone()
+                            aria-hidden=session_detail_panel_hidden
+                        >
+                            <h2>Session Graph</h2>
+                            <ul id="tau-ops-session-graph-nodes" data-node-count=session_graph_node_count>
+                                {session_graph_view}
+                            </ul>
+                            <ul id="tau-ops-session-graph-edges" data-edge-count=session_graph_edge_count>
+                                {session_graph_edges_view}
+                            </ul>
+                        </section>
                         <section id="tau-ops-command-center" aria-live="polite">
                             <section id="tau-ops-kpi-grid" data-kpi-card-count="6">
                                 <article
@@ -1153,8 +1227,9 @@ mod tests {
         TauOpsDashboardAlertFeedRow, TauOpsDashboardAuthMode, TauOpsDashboardChatMessageRow,
         TauOpsDashboardChatSessionOptionRow, TauOpsDashboardChatSnapshot,
         TauOpsDashboardCommandCenterSnapshot, TauOpsDashboardConnectorHealthRow,
-        TauOpsDashboardRoute, TauOpsDashboardSessionTimelineRow, TauOpsDashboardShellContext,
-        TauOpsDashboardSidebarState, TauOpsDashboardTheme,
+        TauOpsDashboardRoute, TauOpsDashboardSessionGraphEdgeRow,
+        TauOpsDashboardSessionGraphNodeRow, TauOpsDashboardSessionTimelineRow,
+        TauOpsDashboardShellContext, TauOpsDashboardSidebarState, TauOpsDashboardTheme,
     };
 
     #[test]
@@ -1696,6 +1771,90 @@ mod tests {
         assert!(html.contains("second detail message"));
         assert!(html.contains(
             "id=\"tau-ops-session-usage-summary\" data-input-tokens=\"0\" data-output-tokens=\"0\" data-total-tokens=\"0\" data-estimated-cost-usd=\"0.000000\""
+        ));
+    }
+
+    #[test]
+    fn functional_spec_2846_c01_c04_c05_sessions_route_renders_graph_panel_summary_and_empty_state()
+    {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Sessions,
+            theme: TauOpsDashboardTheme::Light,
+            sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot {
+                active_session_key: "session-empty".to_string(),
+                session_detail_visible: true,
+                session_detail_route: "/ops/sessions/session-empty".to_string(),
+                ..TauOpsDashboardChatSnapshot::default()
+            },
+        });
+
+        assert!(html.contains(
+            "id=\"tau-ops-session-graph-panel\" data-route=\"/ops/sessions/session-empty\" data-session-key=\"session-empty\" aria-hidden=\"false\""
+        ));
+        assert!(html.contains("id=\"tau-ops-session-graph-nodes\" data-node-count=\"0\""));
+        assert!(html.contains("id=\"tau-ops-session-graph-edges\" data-edge-count=\"0\""));
+        assert!(html.contains("id=\"tau-ops-session-graph-empty-state\" data-empty-state=\"true\""));
+    }
+
+    #[test]
+    fn functional_spec_2846_c02_c03_sessions_route_renders_graph_node_and_edge_rows() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Sessions,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot {
+                active_session_key: "session-graph".to_string(),
+                session_detail_visible: true,
+                session_detail_route: "/ops/sessions/session-graph".to_string(),
+                session_graph_node_rows: vec![
+                    TauOpsDashboardSessionGraphNodeRow {
+                        entry_id: 1,
+                        role: "system".to_string(),
+                    },
+                    TauOpsDashboardSessionGraphNodeRow {
+                        entry_id: 2,
+                        role: "user".to_string(),
+                    },
+                    TauOpsDashboardSessionGraphNodeRow {
+                        entry_id: 3,
+                        role: "assistant".to_string(),
+                    },
+                ],
+                session_graph_edge_rows: vec![
+                    TauOpsDashboardSessionGraphEdgeRow {
+                        source_entry_id: 1,
+                        target_entry_id: 2,
+                    },
+                    TauOpsDashboardSessionGraphEdgeRow {
+                        source_entry_id: 2,
+                        target_entry_id: 3,
+                    },
+                ],
+                ..TauOpsDashboardChatSnapshot::default()
+            },
+        });
+
+        assert!(html.contains("id=\"tau-ops-session-graph-nodes\" data-node-count=\"3\""));
+        assert!(html.contains("id=\"tau-ops-session-graph-edges\" data-edge-count=\"2\""));
+        assert!(html.contains(
+            "id=\"tau-ops-session-graph-node-0\" data-entry-id=\"1\" data-message-role=\"system\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-session-graph-node-1\" data-entry-id=\"2\" data-message-role=\"user\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-session-graph-node-2\" data-entry-id=\"3\" data-message-role=\"assistant\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-session-graph-edge-0\" data-source-entry-id=\"1\" data-target-entry-id=\"2\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-session-graph-edge-1\" data-source-entry-id=\"2\" data-target-entry-id=\"3\""
         ));
     }
 

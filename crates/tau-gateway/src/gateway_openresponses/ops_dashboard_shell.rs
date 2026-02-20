@@ -8,7 +8,8 @@ use tau_ai::{Message, MessageRole};
 use tau_dashboard_ui::{
     render_tau_ops_dashboard_shell_with_context, TauOpsDashboardAuthMode,
     TauOpsDashboardChatMessageRow, TauOpsDashboardChatSessionOptionRow,
-    TauOpsDashboardChatSnapshot, TauOpsDashboardRoute, TauOpsDashboardSessionTimelineRow,
+    TauOpsDashboardChatSnapshot, TauOpsDashboardRoute, TauOpsDashboardSessionGraphEdgeRow,
+    TauOpsDashboardSessionGraphNodeRow, TauOpsDashboardSessionTimelineRow,
     TauOpsDashboardShellContext, TauOpsDashboardSidebarState, TauOpsDashboardTheme,
 };
 use tau_session::SessionStore;
@@ -164,6 +165,8 @@ fn collect_tau_ops_dashboard_chat_snapshot(
     let mut session_detail_usage_total_tokens: u64 = 0;
     let mut session_detail_usage_estimated_cost_usd = "0.000000".to_string();
     let mut session_detail_timeline_rows = Vec::new();
+    let mut session_graph_node_rows = Vec::new();
+    let mut session_graph_edge_rows = Vec::new();
 
     if let Ok(store) = SessionStore::load(&session_path) {
         let validation = store.validation_report();
@@ -181,11 +184,22 @@ fn collect_tau_ops_dashboard_chat_snapshot(
 
         if let Ok(lineage_entries) = store.lineage_entries(store.head_id()) {
             for entry in lineage_entries {
+                let role = tau_ops_chat_message_role_label(entry.message.role).to_string();
+                session_graph_node_rows.push(TauOpsDashboardSessionGraphNodeRow {
+                    entry_id: entry.id,
+                    role: role.clone(),
+                });
+                if let Some(parent_id) = entry.parent_id {
+                    session_graph_edge_rows.push(TauOpsDashboardSessionGraphEdgeRow {
+                        source_entry_id: parent_id,
+                        target_entry_id: entry.id,
+                    });
+                }
+
                 let content = entry.message.text_content();
                 if content.trim().is_empty() {
                     continue;
                 }
-                let role = tau_ops_chat_message_role_label(entry.message.role).to_string();
                 session_detail_timeline_rows.push(TauOpsDashboardSessionTimelineRow {
                     entry_id: entry.id,
                     role: role.clone(),
@@ -217,6 +231,8 @@ fn collect_tau_ops_dashboard_chat_snapshot(
         session_detail_usage_total_tokens,
         session_detail_usage_estimated_cost_usd,
         session_detail_timeline_rows,
+        session_graph_node_rows,
+        session_graph_edge_rows,
     }
 }
 

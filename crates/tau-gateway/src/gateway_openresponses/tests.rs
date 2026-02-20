@@ -1594,6 +1594,93 @@ async fn integration_spec_2842_c02_c04_ops_session_detail_shell_renders_lineage_
 }
 
 #[tokio::test]
+async fn functional_spec_2846_c01_c04_c05_ops_session_detail_shell_exposes_graph_panel_summary_and_empty_state_markers(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/sessions/session-empty?theme=light&sidebar=collapsed"
+        ))
+        .send()
+        .await
+        .expect("ops session detail request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response
+        .text()
+        .await
+        .expect("read ops session detail response body");
+
+    assert!(body.contains(
+        "id=\"tau-ops-session-graph-panel\" data-route=\"/ops/sessions/session-empty\" data-session-key=\"session-empty\" aria-hidden=\"false\""
+    ));
+    assert!(body.contains("id=\"tau-ops-session-graph-nodes\" data-node-count=\"0\""));
+    assert!(body.contains("id=\"tau-ops-session-graph-edges\" data-edge-count=\"0\""));
+    assert!(body.contains("id=\"tau-ops-session-graph-empty-state\" data-empty-state=\"true\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_spec_2846_c02_c03_ops_session_detail_shell_renders_graph_node_and_edge_rows() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    for message in ["graph user one", "graph user two"] {
+        let send_response = client
+            .post(format!("http://{addr}/ops/chat/send"))
+            .form(&[
+                ("session_key", "session-graph"),
+                ("message", message),
+                ("theme", "light"),
+                ("sidebar", "collapsed"),
+            ])
+            .send()
+            .await
+            .expect("ops chat send request");
+        assert_eq!(send_response.status(), StatusCode::SEE_OTHER);
+    }
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/sessions/session-graph?theme=light&sidebar=collapsed"
+        ))
+        .send()
+        .await
+        .expect("ops session graph render request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops session graph body");
+
+    assert!(body.contains("id=\"tau-ops-session-graph-nodes\" data-node-count=\"3\""));
+    assert!(body.contains("id=\"tau-ops-session-graph-edges\" data-edge-count=\"2\""));
+    assert!(body.contains(
+        "id=\"tau-ops-session-graph-node-0\" data-entry-id=\"1\" data-message-role=\"system\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-session-graph-node-1\" data-entry-id=\"2\" data-message-role=\"user\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-session-graph-node-2\" data-entry-id=\"3\" data-message-role=\"user\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-session-graph-edge-0\" data-source-entry-id=\"1\" data-target-entry-id=\"2\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-session-graph-edge-1\" data-source-entry-id=\"2\" data-target-entry-id=\"3\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2806_c01_c02_c03_ops_shell_command_center_markers_reflect_dashboard_snapshot(
 ) {
     let temp = tempdir().expect("tempdir");
