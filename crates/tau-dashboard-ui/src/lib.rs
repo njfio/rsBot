@@ -940,10 +940,28 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                     .enumerate()
                                     .map(|(index, message_row)| {
                                         let row_id = format!("tau-ops-chat-message-row-{index}");
-                                        view! {
-                                            <li id=row_id data-message-role=message_row.role.clone()>
-                                                {message_row.content.clone()}
-                                            </li>
+                                        if message_row.role == "tool" {
+                                            let tool_card_id =
+                                                format!("tau-ops-chat-tool-card-{index}");
+                                            view! {
+                                                <li id=row_id data-message-role=message_row.role.clone()>
+                                                    <article
+                                                        id=tool_card_id
+                                                        data-tool-card="true"
+                                                        data-inline-result="true"
+                                                    >
+                                                        {message_row.content.clone()}
+                                                    </article>
+                                                </li>
+                                            }
+                                            .into_any()
+                                        } else {
+                                            view! {
+                                                <li id=row_id data-message-role=message_row.role.clone()>
+                                                    {message_row.content.clone()}
+                                                </li>
+                                            }
+                                            .into_any()
                                         }
                                     })
                                     .collect_view()}
@@ -1636,6 +1654,90 @@ mod tests {
         ));
         assert!(sessions_html.contains(
             "id=\"tau-ops-chat-token-counter\" data-session-key=\"chat-c01\" data-input-tokens=\"0\" data-output-tokens=\"0\" data-total-tokens=\"0\""
+        ));
+    }
+
+    #[test]
+    fn functional_spec_2866_c01_c02_chat_route_renders_inline_tool_card_for_tool_rows_only() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Chat,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot {
+                active_session_key: "chat-tool-session".to_string(),
+                message_rows: vec![
+                    TauOpsDashboardChatMessageRow {
+                        role: "user".to_string(),
+                        content: "run tool".to_string(),
+                    },
+                    TauOpsDashboardChatMessageRow {
+                        role: "tool".to_string(),
+                        content: "{\"result\":\"ok\"}".to_string(),
+                    },
+                    TauOpsDashboardChatMessageRow {
+                        role: "assistant".to_string(),
+                        content: "tool completed".to_string(),
+                    },
+                ],
+                ..TauOpsDashboardChatSnapshot::default()
+            },
+        });
+
+        assert!(html.contains("id=\"tau-ops-chat-message-row-1\" data-message-role=\"tool\""));
+        assert!(html.contains(
+            "id=\"tau-ops-chat-tool-card-1\" data-tool-card=\"true\" data-inline-result=\"true\""
+        ));
+        assert!(!html.contains("id=\"tau-ops-chat-tool-card-0\""));
+        assert!(!html.contains("id=\"tau-ops-chat-tool-card-2\""));
+    }
+
+    #[test]
+    fn regression_spec_2866_c04_non_chat_routes_keep_hidden_chat_tool_card_markers() {
+        let ops_html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Ops,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot {
+                active_session_key: "chat-tool-session".to_string(),
+                message_rows: vec![TauOpsDashboardChatMessageRow {
+                    role: "tool".to_string(),
+                    content: "{\"result\":\"ok\"}".to_string(),
+                }],
+                ..TauOpsDashboardChatSnapshot::default()
+            },
+        });
+        assert!(ops_html.contains(
+            "id=\"tau-ops-chat-panel\" data-route=\"/ops/chat\" aria-hidden=\"true\" data-active-session-key=\"chat-tool-session\" data-panel-visible=\"false\""
+        ));
+        assert!(ops_html.contains(
+            "id=\"tau-ops-chat-tool-card-0\" data-tool-card=\"true\" data-inline-result=\"true\""
+        ));
+
+        let sessions_html =
+            render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+                auth_mode: TauOpsDashboardAuthMode::Token,
+                active_route: TauOpsDashboardRoute::Sessions,
+                theme: TauOpsDashboardTheme::Dark,
+                sidebar_state: TauOpsDashboardSidebarState::Expanded,
+                command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+                chat: TauOpsDashboardChatSnapshot {
+                    active_session_key: "chat-tool-session".to_string(),
+                    message_rows: vec![TauOpsDashboardChatMessageRow {
+                        role: "tool".to_string(),
+                        content: "{\"result\":\"ok\"}".to_string(),
+                    }],
+                    ..TauOpsDashboardChatSnapshot::default()
+                },
+            });
+        assert!(sessions_html.contains(
+            "id=\"tau-ops-chat-panel\" data-route=\"/ops/chat\" aria-hidden=\"true\" data-active-session-key=\"chat-tool-session\" data-panel-visible=\"false\""
+        ));
+        assert!(sessions_html.contains(
+            "id=\"tau-ops-chat-tool-card-0\" data-tool-card=\"true\" data-inline-result=\"true\""
         ));
     }
 

@@ -1387,6 +1387,114 @@ async fn integration_spec_2862_c04_ops_and_sessions_routes_preserve_hidden_chat_
 }
 
 #[tokio::test]
+async fn functional_spec_2866_c01_c03_ops_chat_shell_exposes_inline_tool_card_markers() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let session_path = gateway_session_path(&state.config.state_dir, "chat-tool-card");
+    let mut store = SessionStore::load(&session_path).expect("load chat tool-card session");
+    let root = store
+        .append_messages(None, &[Message::system("tool-card-root")])
+        .expect("append root");
+    let user_head = store
+        .append_messages(root, &[Message::user("run memory search")])
+        .expect("append user");
+    store
+        .append_messages(
+            user_head,
+            &[
+                Message::tool_result("tool-call-1", "memory_search", "{\"matches\":1}", false),
+                Message::assistant_text("tool completed"),
+            ],
+        )
+        .expect("append tool+assistant");
+
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/chat?theme=dark&sidebar=expanded&session=chat-tool-card"
+        ))
+        .send()
+        .await
+        .expect("ops chat tool-card request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops chat body");
+
+    assert!(body.contains(
+        "id=\"tau-ops-chat-panel\" data-route=\"/ops/chat\" aria-hidden=\"false\" data-active-session-key=\"chat-tool-card\" data-panel-visible=\"true\""
+    ));
+    assert!(body.contains("id=\"tau-ops-chat-message-row-1\" data-message-role=\"tool\""));
+    assert!(body.contains(
+        "id=\"tau-ops-chat-tool-card-1\" data-tool-card=\"true\" data-inline-result=\"true\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_spec_2866_c04_ops_and_sessions_routes_preserve_hidden_inline_tool_card_markers(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let session_path = gateway_session_path(&state.config.state_dir, "chat-tool-card");
+    let mut store = SessionStore::load(&session_path).expect("load chat tool-card session");
+    let root = store
+        .append_messages(None, &[Message::system("tool-card-root")])
+        .expect("append root");
+    store
+        .append_messages(
+            root,
+            &[Message::tool_result(
+                "tool-call-1",
+                "memory_search",
+                "{\"matches\":1}",
+                false,
+            )],
+        )
+        .expect("append tool");
+
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let ops_response = client
+        .get(format!(
+            "http://{addr}/ops?theme=dark&sidebar=expanded&session=chat-tool-card"
+        ))
+        .send()
+        .await
+        .expect("ops shell request");
+    assert_eq!(ops_response.status(), StatusCode::OK);
+    let ops_body = ops_response.text().await.expect("read ops shell body");
+    assert!(ops_body.contains(
+        "id=\"tau-ops-chat-panel\" data-route=\"/ops/chat\" aria-hidden=\"true\" data-active-session-key=\"chat-tool-card\" data-panel-visible=\"false\""
+    ));
+    assert!(ops_body.contains(
+        "id=\"tau-ops-chat-tool-card-0\" data-tool-card=\"true\" data-inline-result=\"true\""
+    ));
+
+    let sessions_response = client
+        .get(format!(
+            "http://{addr}/ops/sessions?theme=dark&sidebar=expanded&session=chat-tool-card"
+        ))
+        .send()
+        .await
+        .expect("ops sessions shell request");
+    assert_eq!(sessions_response.status(), StatusCode::OK);
+    let sessions_body = sessions_response
+        .text()
+        .await
+        .expect("read ops sessions shell body");
+    assert!(sessions_body.contains(
+        "id=\"tau-ops-chat-panel\" data-route=\"/ops/chat\" aria-hidden=\"true\" data-active-session-key=\"chat-tool-card\" data-panel-visible=\"false\""
+    ));
+    assert!(sessions_body.contains(
+        "id=\"tau-ops-chat-tool-card-0\" data-tool-card=\"true\" data-inline-result=\"true\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2834_c01_ops_chat_shell_exposes_session_selector_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");
