@@ -1,6 +1,6 @@
 # Spec: Issue #2721 - Integrate ProcessManager/runtime profiles into live branch-worker execution
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 `tau-agent-core` already defines `ProcessType`, role profiles, and a `ProcessManager`, but the live branch follow-up path executes directly without supervisor lifecycle registration. This leaves the G1 checklist partially open because channel delegation lineage and worker-role constraints are not enforced by runtime contracts.

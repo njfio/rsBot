@@ -1,13 +1,13 @@
 # Tasks: Issue #2721 - Integrate ProcessManager/runtime profiles into live branch-worker execution
 
 ## Ordered Tasks
-1. [ ] T1 (RED): add failing conformance/regression tests for C-01..C-04 (lineage, worker profile enforcement, terminal states).
-2. [ ] T2 (GREEN): add process context/runtime profile helpers to `Agent` and expose snapshot accessors for verification.
-3. [ ] T3 (GREEN): refactor branch follow-up execution to supervised branch/worker tasks through `ProcessManager`.
-4. [ ] T4 (GREEN): add deterministic `process_delegation` payload metadata while preserving existing reason codes.
-5. [ ] T5 (REGRESSION): run/adjust existing `spec_2602` coverage to verify unchanged guardrails.
-6. [ ] T6 (VERIFY): run scoped fmt/clippy/targeted tests and capture C-06 evidence.
-7. [ ] T7 (DOC): update `tasks/spacebot-comparison.md` G1 checklist entries completed by this slice.
+1. [x] T1 (RED): add failing conformance/regression tests for C-01..C-04 (lineage, worker profile enforcement, terminal states).
+2. [x] T2 (GREEN): add process context/runtime profile helpers to `Agent` and expose snapshot accessors for verification.
+3. [x] T3 (GREEN): refactor branch follow-up execution to supervised branch/worker tasks through `ProcessManager`.
+4. [x] T4 (GREEN): add deterministic `process_delegation` payload metadata while preserving existing reason codes.
+5. [x] T5 (REGRESSION): run/adjust existing `spec_2602` coverage to verify unchanged guardrails.
+6. [x] T6 (VERIFY): run scoped fmt/clippy/targeted tests and capture C-06 evidence.
+7. [x] T7 (DOC): update `tasks/spacebot-comparison.md` G1 checklist entries completed by this slice.
 
 ## Tier Mapping
 - Unit: process context helpers/profile application behavior.
