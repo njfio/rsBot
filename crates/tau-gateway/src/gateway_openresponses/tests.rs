@@ -1215,6 +1215,105 @@ async fn functional_spec_2802_c03_invalid_query_control_values_fall_back_to_defa
 }
 
 #[tokio::test]
+async fn functional_spec_2830_c01_ops_chat_shell_exposes_send_form_and_fallback_transcript_markers()
+{
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/chat?theme=light&sidebar=collapsed&session=chat-c01"
+        ))
+        .send()
+        .await
+        .expect("ops chat request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops chat body");
+
+    assert!(body.contains("data-active-route=\"chat\""));
+    assert!(body.contains(
+        "id=\"tau-ops-chat-panel\" data-route=\"/ops/chat\" aria-hidden=\"false\" data-active-session-key=\"chat-c01\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-chat-send-form\" action=\"/ops/chat/send\" method=\"post\" data-session-key=\"chat-c01\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-chat-session-key\" type=\"hidden\" name=\"session_key\" value=\"chat-c01\""
+    ));
+    assert!(
+        body.contains("id=\"tau-ops-chat-theme\" type=\"hidden\" name=\"theme\" value=\"light\"")
+    );
+    assert!(body.contains(
+        "id=\"tau-ops-chat-sidebar\" type=\"hidden\" name=\"sidebar\" value=\"collapsed\""
+    ));
+    assert!(body.contains("id=\"tau-ops-chat-transcript\" data-message-count=\"1\""));
+    assert!(body.contains("id=\"tau-ops-chat-message-row-0\" data-message-role=\"system\""));
+    assert!(body.contains("No chat messages yet."));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_spec_2830_c02_c03_ops_chat_send_appends_message_and_renders_transcript_row() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state.clone())
+        .await
+        .expect("spawn server");
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    let send_response = client
+        .post(format!("http://{addr}/ops/chat/send"))
+        .form(&[
+            ("session_key", "chat-send-session"),
+            ("message", "hello ops chat"),
+            ("theme", "light"),
+            ("sidebar", "collapsed"),
+        ])
+        .send()
+        .await
+        .expect("ops chat send request");
+    assert_eq!(send_response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        send_response
+            .headers()
+            .get("location")
+            .and_then(|value| value.to_str().ok()),
+        Some("/ops/chat?theme=light&sidebar=collapsed&session=chat-send-session")
+    );
+
+    let chat_response = client
+        .get(format!(
+            "http://{addr}/ops/chat?theme=light&sidebar=collapsed&session=chat-send-session"
+        ))
+        .send()
+        .await
+        .expect("ops chat render request");
+    assert_eq!(chat_response.status(), StatusCode::OK);
+    let chat_body = chat_response.text().await.expect("read ops chat body");
+    assert!(chat_body.contains("id=\"tau-ops-chat-transcript\" data-message-count=\"1\""));
+    assert!(chat_body.contains("id=\"tau-ops-chat-message-row-0\" data-message-role=\"user\""));
+    assert!(chat_body.contains("hello ops chat"));
+
+    let session_path = gateway_session_path(&state.config.state_dir, "chat-send-session");
+    let store = SessionStore::load(&session_path).expect("load ops chat session");
+    let lineage = store
+        .lineage_messages(store.head_id())
+        .expect("lineage messages");
+    assert!(lineage
+        .iter()
+        .any(|message| message.role == MessageRole::User
+            && message.text_content() == "hello ops chat"));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2806_c01_c02_c03_ops_shell_command_center_markers_reflect_dashboard_snapshot(
 ) {
     let temp = tempdir().expect("tempdir");

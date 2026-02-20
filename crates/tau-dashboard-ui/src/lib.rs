@@ -212,6 +212,33 @@ pub struct TauOpsDashboardConnectorHealthRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TauOpsDashboardChatMessageRow` in `tau-dashboard-ui`.
+pub struct TauOpsDashboardChatMessageRow {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TauOpsDashboardChatSnapshot` in `tau-dashboard-ui`.
+pub struct TauOpsDashboardChatSnapshot {
+    pub active_session_key: String,
+    pub send_form_action: String,
+    pub send_form_method: String,
+    pub message_rows: Vec<TauOpsDashboardChatMessageRow>,
+}
+
+impl Default for TauOpsDashboardChatSnapshot {
+    fn default() -> Self {
+        Self {
+            active_session_key: "default".to_string(),
+            send_form_action: "/ops/chat/send".to_string(),
+            send_form_method: "post".to_string(),
+            message_rows: vec![],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Public struct `TauOpsDashboardCommandCenterSnapshot` in `tau-dashboard-ui`.
 pub struct TauOpsDashboardCommandCenterSnapshot {
     pub health_state: String,
@@ -295,6 +322,7 @@ pub struct TauOpsDashboardShellContext {
     pub theme: TauOpsDashboardTheme,
     pub sidebar_state: TauOpsDashboardSidebarState,
     pub command_center: TauOpsDashboardCommandCenterSnapshot,
+    pub chat: TauOpsDashboardChatSnapshot,
 }
 
 impl Default for TauOpsDashboardShellContext {
@@ -305,6 +333,7 @@ impl Default for TauOpsDashboardShellContext {
             theme: TauOpsDashboardTheme::Dark,
             sidebar_state: TauOpsDashboardSidebarState::Expanded,
             command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot::default(),
         }
     }
 }
@@ -350,6 +379,23 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     } else {
         "false"
     };
+    let chat_panel_hidden = if matches!(context.active_route, TauOpsDashboardRoute::Chat) {
+        "false"
+    } else {
+        "true"
+    };
+    let chat_message_rows = if context.chat.message_rows.is_empty() {
+        vec![TauOpsDashboardChatMessageRow {
+            role: "system".to_string(),
+            content: "No chat messages yet.".to_string(),
+        }]
+    } else {
+        context.chat.message_rows.clone()
+    };
+    let chat_message_count_value = chat_message_rows.len().to_string();
+    let chat_session_key = context.chat.active_session_key.clone();
+    let chat_send_form_action = context.chat.send_form_action.clone();
+    let chat_send_form_method = context.chat.send_form_method.clone();
     let health_state = context.command_center.health_state.clone();
     let health_reason = context.command_center.health_reason.clone();
     let rollout_gate = context.command_center.rollout_gate.clone();
@@ -557,6 +603,55 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                         </form>
                     </section>
                     <main id="tau-ops-protected-shell" data-route="/ops" aria-hidden=protected_hidden>
+                        <section
+                            id="tau-ops-chat-panel"
+                            data-route="/ops/chat"
+                            aria-hidden=chat_panel_hidden
+                            data-active-session-key=chat_session_key.clone()
+                        >
+                            <h2>Conversation / Chat</h2>
+                            <form
+                                id="tau-ops-chat-send-form"
+                                action=chat_send_form_action
+                                method=chat_send_form_method
+                                data-session-key=chat_session_key.clone()
+                            >
+                                <input
+                                    id="tau-ops-chat-session-key"
+                                    type="hidden"
+                                    name="session_key"
+                                    value=chat_session_key.clone()
+                                />
+                                <input id="tau-ops-chat-theme" type="hidden" name="theme" value=theme_attr />
+                                <input
+                                    id="tau-ops-chat-sidebar"
+                                    type="hidden"
+                                    name="sidebar"
+                                    value=sidebar_state_attr
+                                />
+                                <label for="tau-ops-chat-input">Message</label>
+                                <textarea
+                                    id="tau-ops-chat-input"
+                                    name="message"
+                                    placeholder="Type a message for the active session"
+                                ></textarea>
+                                <button id="tau-ops-chat-send-button" type="submit">Send</button>
+                            </form>
+                            <ul id="tau-ops-chat-transcript" data-message-count=chat_message_count_value>
+                                {chat_message_rows
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(index, message_row)| {
+                                        let row_id = format!("tau-ops-chat-message-row-{index}");
+                                        view! {
+                                            <li id=row_id data-message-role=message_row.role.clone()>
+                                                {message_row.content.clone()}
+                                            </li>
+                                        }
+                                    })
+                                    .collect_view()}
+                            </ul>
+                        </section>
                         <section id="tau-ops-command-center" aria-live="polite">
                             <section id="tau-ops-kpi-grid" data-kpi-card-count="6">
                                 <article
@@ -804,7 +899,8 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
 mod tests {
     use super::{
         render_tau_ops_dashboard_shell, render_tau_ops_dashboard_shell_with_context,
-        TauOpsDashboardAlertFeedRow, TauOpsDashboardAuthMode, TauOpsDashboardCommandCenterSnapshot,
+        TauOpsDashboardAlertFeedRow, TauOpsDashboardAuthMode, TauOpsDashboardChatMessageRow,
+        TauOpsDashboardChatSnapshot, TauOpsDashboardCommandCenterSnapshot,
         TauOpsDashboardConnectorHealthRow, TauOpsDashboardRoute, TauOpsDashboardShellContext,
         TauOpsDashboardSidebarState, TauOpsDashboardTheme,
     };
@@ -845,6 +941,7 @@ mod tests {
             theme: TauOpsDashboardTheme::Dark,
             sidebar_state: TauOpsDashboardSidebarState::Expanded,
             command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot::default(),
         });
         assert!(html.contains("data-auth-mode=\"password-session\""));
         assert!(html.contains("data-active-route=\"login\""));
@@ -861,6 +958,7 @@ mod tests {
             theme: TauOpsDashboardTheme::Dark,
             sidebar_state: TauOpsDashboardSidebarState::Expanded,
             command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot::default(),
         });
         assert!(html.contains("data-auth-mode=\"none\""));
         assert!(html.contains("data-login-required=\"false\""));
@@ -912,6 +1010,7 @@ mod tests {
             theme: TauOpsDashboardTheme::Dark,
             sidebar_state: TauOpsDashboardSidebarState::Expanded,
             command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot::default(),
         });
         assert!(html.contains("id=\"tau-ops-breadcrumbs\""));
         assert!(html.contains("data-breadcrumb-current=\"login\""));
@@ -957,6 +1056,7 @@ mod tests {
                 theme: TauOpsDashboardTheme::Dark,
                 sidebar_state: TauOpsDashboardSidebarState::Expanded,
                 command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+                chat: TauOpsDashboardChatSnapshot::default(),
             });
             assert!(html.contains(&format!("data-active-route=\"{expected_active_route}\"")));
             assert!(html.contains(&format!(
@@ -986,6 +1086,7 @@ mod tests {
             theme: TauOpsDashboardTheme::Dark,
             sidebar_state: TauOpsDashboardSidebarState::Collapsed,
             command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot::default(),
         });
         assert!(html.contains("data-sidebar-state=\"collapsed\""));
         assert!(html.contains("data-sidebar-target-state=\"expanded\""));
@@ -1001,6 +1102,7 @@ mod tests {
             theme: TauOpsDashboardTheme::Light,
             sidebar_state: TauOpsDashboardSidebarState::Expanded,
             command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot::default(),
         });
         assert!(html.contains("data-theme=\"light\""));
         assert!(html.contains(
@@ -1010,6 +1112,69 @@ mod tests {
             "id=\"tau-ops-theme-toggle-light\" data-theme-option=\"light\" aria-pressed=\"true\""
         ));
         assert!(html.contains("href=\"/ops/chat?theme=dark&amp;sidebar=expanded\""));
+    }
+
+    #[test]
+    fn functional_spec_2830_c01_chat_route_renders_send_form_and_fallback_transcript_markers() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Chat,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot::default(),
+        });
+
+        assert!(html.contains("id=\"tau-ops-chat-panel\" data-route=\"/ops/chat\" aria-hidden=\"false\" data-active-session-key=\"default\""));
+        assert!(html.contains("id=\"tau-ops-chat-send-form\" action=\"/ops/chat/send\" method=\"post\" data-session-key=\"default\""));
+        assert!(html.contains("id=\"tau-ops-chat-session-key\" type=\"hidden\" name=\"session_key\" value=\"default\""));
+        assert!(html
+            .contains("id=\"tau-ops-chat-theme\" type=\"hidden\" name=\"theme\" value=\"dark\""));
+        assert!(html.contains(
+            "id=\"tau-ops-chat-sidebar\" type=\"hidden\" name=\"sidebar\" value=\"expanded\""
+        ));
+        assert!(html.contains("id=\"tau-ops-chat-transcript\" data-message-count=\"1\""));
+        assert!(html.contains("id=\"tau-ops-chat-message-row-0\" data-message-role=\"system\""));
+        assert!(html.contains("No chat messages yet."));
+    }
+
+    #[test]
+    fn functional_spec_2830_c02_chat_route_renders_snapshot_message_rows_for_active_session() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Chat,
+            theme: TauOpsDashboardTheme::Light,
+            sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot {
+                active_session_key: "session-42".to_string(),
+                send_form_action: "/ops/chat/send".to_string(),
+                send_form_method: "post".to_string(),
+                message_rows: vec![
+                    TauOpsDashboardChatMessageRow {
+                        role: "user".to_string(),
+                        content: "first message".to_string(),
+                    },
+                    TauOpsDashboardChatMessageRow {
+                        role: "assistant".to_string(),
+                        content: "second message".to_string(),
+                    },
+                ],
+            },
+        });
+
+        assert!(html.contains("data-active-session-key=\"session-42\""));
+        assert!(html.contains("id=\"tau-ops-chat-send-form\" action=\"/ops/chat/send\" method=\"post\" data-session-key=\"session-42\""));
+        assert!(html
+            .contains("id=\"tau-ops-chat-theme\" type=\"hidden\" name=\"theme\" value=\"light\""));
+        assert!(html.contains(
+            "id=\"tau-ops-chat-sidebar\" type=\"hidden\" name=\"sidebar\" value=\"collapsed\""
+        ));
+        assert!(html.contains("id=\"tau-ops-chat-transcript\" data-message-count=\"2\""));
+        assert!(html.contains("id=\"tau-ops-chat-message-row-0\" data-message-role=\"user\""));
+        assert!(html.contains("id=\"tau-ops-chat-message-row-1\" data-message-role=\"assistant\""));
+        assert!(html.contains("first message"));
+        assert!(html.contains("second message"));
     }
 
     #[test]
@@ -1048,6 +1213,7 @@ mod tests {
                 alert_feed_rows: vec![],
                 connector_health_rows: vec![],
             },
+            chat: TauOpsDashboardChatSnapshot::default(),
         });
 
         assert!(html.contains("data-health-state=\"healthy\""));
@@ -1118,6 +1284,7 @@ mod tests {
                 alert_feed_rows: vec![],
                 connector_health_rows: vec![],
             },
+            chat: TauOpsDashboardChatSnapshot::default(),
         });
 
         assert!(html.contains("id=\"tau-ops-control-panel\""));
@@ -1169,6 +1336,7 @@ mod tests {
                 alert_feed_rows: vec![],
                 connector_health_rows: vec![],
             },
+            chat: TauOpsDashboardChatSnapshot::default(),
         });
 
         assert!(html.contains("id=\"tau-ops-control-action-pause\""));
@@ -1219,6 +1387,7 @@ mod tests {
                 alert_feed_rows: vec![],
                 connector_health_rows: vec![],
             },
+            chat: TauOpsDashboardChatSnapshot::default(),
         });
 
         assert!(html.contains("id=\"tau-ops-queue-timeline-chart\""));
@@ -1287,6 +1456,7 @@ mod tests {
                 ],
                 connector_health_rows: vec![],
             },
+            chat: TauOpsDashboardChatSnapshot::default(),
         });
 
         assert!(html.contains("id=\"tau-ops-alert-feed-list\""));
@@ -1339,6 +1509,7 @@ mod tests {
                 }],
                 connector_health_rows: vec![],
             },
+            chat: TauOpsDashboardChatSnapshot::default(),
         });
 
         assert!(html.contains("id=\"tau-ops-alert-feed-list\""));
@@ -1388,6 +1559,7 @@ mod tests {
                 }],
                 connector_health_rows: vec![],
             },
+            chat: TauOpsDashboardChatSnapshot::default(),
         });
 
         assert!(html.contains("id=\"tau-ops-connector-health-table\""));
@@ -1443,6 +1615,7 @@ mod tests {
                     provider_failures: 2,
                 }],
             },
+            chat: TauOpsDashboardChatSnapshot::default(),
         });
 
         assert!(html.contains("id=\"tau-ops-connector-health-table\""));
