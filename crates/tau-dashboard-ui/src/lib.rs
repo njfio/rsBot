@@ -717,10 +717,23 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     let widget_count_value = context.command_center.widget_count.to_string();
     let timeline_cycle_count_value = context.command_center.timeline_cycle_count.to_string();
     let timeline_cycle_count_table_value = timeline_cycle_count_value.clone();
+    let timeline_cycle_count_summary_value = timeline_cycle_count_table_value.clone();
+    let timeline_point_count_table_value = timeline_point_count_value.clone();
+    let timeline_last_timestamp_table_value = timeline_last_timestamp_value.clone();
     let timeline_invalid_cycle_count_value = context
         .command_center
         .timeline_invalid_cycle_count
         .to_string();
+    let timeline_invalid_cycle_count_summary_value = timeline_invalid_cycle_count_value.clone();
+    let timeline_empty_row = if context.command_center.timeline_point_count == 0 {
+        Some(view! {
+            <tr id="tau-ops-timeline-empty-row" data-empty-state="true">
+                <td colspan="4">No timeline points yet.</td>
+            </tr>
+        })
+    } else {
+        None
+    };
     let primary_alert_code = context.command_center.primary_alert_code.clone();
     let primary_alert_severity = context.command_center.primary_alert_severity.clone();
     let primary_alert_message = context.command_center.primary_alert_message.clone();
@@ -1017,7 +1030,7 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                             <section
                                 id="tau-ops-queue-timeline-chart"
                                 data-component="TimelineChart"
-                                data-timeline-range=timeline_range
+                                data-timeline-range=timeline_range.clone()
                                 data-timeline-point-count=timeline_point_count_value
                                 data-timeline-last-timestamp=timeline_last_timestamp_value
                             >
@@ -1191,6 +1204,8 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                             </section>
                             <section
                                 id="tau-ops-data-table"
+                                data-route="/ops"
+                                data-timeline-range=timeline_range
                                 data-component="DataTable"
                                 data-timeline-cycle-count=timeline_cycle_count_table_value
                                 data-timeline-invalid-cycle-count=timeline_invalid_cycle_count_value
@@ -1199,15 +1214,27 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                 <table>
                                     <thead>
                                         <tr>
+                                            <th scope="col">Last Timestamp</th>
+                                            <th scope="col">Point Count</th>
                                             <th scope="col">Cycle Reports</th>
                                             <th scope="col">Invalid Reports</th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        <tr id="tau-ops-timeline-summary-row">
+                                        <tr
+                                            id="tau-ops-timeline-summary-row"
+                                            data-row-kind="summary"
+                                            data-last-timestamp=timeline_last_timestamp_table_value
+                                            data-point-count=timeline_point_count_table_value
+                                            data-cycle-count=timeline_cycle_count_summary_value
+                                            data-invalid-cycle-count=timeline_invalid_cycle_count_summary_value
+                                        >
+                                            <td>{context.command_center.timeline_last_timestamp_unix_ms}</td>
+                                            <td>{context.command_center.timeline_point_count}</td>
                                             <td>{context.command_center.timeline_cycle_count}</td>
                                             <td>{context.command_center.timeline_invalid_cycle_count}</td>
                                         </tr>
+                                        {timeline_empty_row}
                                     </tbody>
                                 </table>
                             </section>
@@ -2109,6 +2136,58 @@ mod tests {
         assert!(html.contains("href=\"/ops?theme=light&amp;sidebar=collapsed&amp;range=1h\""));
         assert!(html.contains("href=\"/ops?theme=light&amp;sidebar=collapsed&amp;range=6h\""));
         assert!(html.contains("href=\"/ops?theme=light&amp;sidebar=collapsed&amp;range=24h\""));
+    }
+
+    #[test]
+    fn functional_spec_2850_c01_c02_c04_recent_cycles_table_renders_panel_and_summary_markers() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Ops,
+            theme: TauOpsDashboardTheme::Light,
+            sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+            command_center: TauOpsDashboardCommandCenterSnapshot {
+                timeline_range: "6h".to_string(),
+                timeline_point_count: 2,
+                timeline_last_timestamp_unix_ms: 811,
+                timeline_cycle_count: 2,
+                timeline_invalid_cycle_count: 1,
+                ..TauOpsDashboardCommandCenterSnapshot::default()
+            },
+            chat: TauOpsDashboardChatSnapshot::default(),
+        });
+
+        assert!(html
+            .contains("id=\"tau-ops-data-table\" data-route=\"/ops\" data-timeline-range=\"6h\""));
+        assert!(html.contains(
+            "id=\"tau-ops-timeline-summary-row\" data-row-kind=\"summary\" data-last-timestamp=\"811\" data-point-count=\"2\" data-cycle-count=\"2\" data-invalid-cycle-count=\"1\""
+        ));
+        assert!(!html.contains("id=\"tau-ops-timeline-empty-row\""));
+    }
+
+    #[test]
+    fn functional_spec_2850_c03_recent_cycles_table_renders_empty_state_marker() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Ops,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot {
+                timeline_range: "1h".to_string(),
+                timeline_point_count: 0,
+                timeline_last_timestamp_unix_ms: 0,
+                timeline_cycle_count: 0,
+                timeline_invalid_cycle_count: 0,
+                ..TauOpsDashboardCommandCenterSnapshot::default()
+            },
+            chat: TauOpsDashboardChatSnapshot::default(),
+        });
+
+        assert!(html
+            .contains("id=\"tau-ops-data-table\" data-route=\"/ops\" data-timeline-range=\"1h\""));
+        assert!(html.contains(
+            "id=\"tau-ops-timeline-summary-row\" data-row-kind=\"summary\" data-last-timestamp=\"0\" data-point-count=\"0\" data-cycle-count=\"0\" data-invalid-cycle-count=\"0\""
+        ));
+        assert!(html.contains("id=\"tau-ops-timeline-empty-row\" data-empty-state=\"true\""));
     }
 
     #[test]

@@ -1862,6 +1862,67 @@ async fn functional_spec_2814_c03_ops_shell_timeline_range_invalid_query_default
 }
 
 #[tokio::test]
+async fn functional_spec_2850_c01_c02_c03_ops_shell_recent_cycles_table_exposes_panel_summary_and_empty_state_markers(
+) {
+    let temp = tempdir().expect("tempdir");
+    write_training_runtime_fixture(temp.path(), 0);
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops?theme=dark&sidebar=expanded&range=24h"
+        ))
+        .send()
+        .await
+        .expect("ops shell request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops shell body");
+
+    assert!(
+        body.contains("id=\"tau-ops-data-table\" data-route=\"/ops\" data-timeline-range=\"24h\"")
+    );
+    assert!(body.contains(
+        "id=\"tau-ops-timeline-summary-row\" data-row-kind=\"summary\" data-last-timestamp=\"0\" data-point-count=\"0\" data-cycle-count=\"0\" data-invalid-cycle-count=\"0\""
+    ));
+    assert!(body.contains("id=\"tau-ops-timeline-empty-row\" data-empty-state=\"true\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_spec_2850_c04_ops_shell_recent_cycles_table_hides_empty_state_when_timeline_present(
+) {
+    let temp = tempdir().expect("tempdir");
+    write_dashboard_runtime_fixture(temp.path());
+    write_training_runtime_fixture(temp.path(), 0);
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops?theme=light&sidebar=collapsed&range=6h"
+        ))
+        .send()
+        .await
+        .expect("ops shell request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops shell body");
+
+    assert!(
+        body.contains("id=\"tau-ops-data-table\" data-route=\"/ops\" data-timeline-range=\"6h\"")
+    );
+    assert!(body.contains(
+        "id=\"tau-ops-timeline-summary-row\" data-row-kind=\"summary\" data-last-timestamp=\"811\" data-point-count=\"2\" data-cycle-count=\"2\" data-invalid-cycle-count=\"1\""
+    ));
+    assert!(!body.contains("id=\"tau-ops-timeline-empty-row\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2818_c01_c02_ops_shell_alert_feed_row_markers_reflect_dashboard_snapshot()
 {
     let temp = tempdir().expect("tempdir");
