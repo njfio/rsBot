@@ -992,6 +992,32 @@ async fn functional_spec_2786_c04_ops_login_shell_endpoint_returns_login_route_m
 }
 
 #[tokio::test]
+async fn functional_spec_2790_c05_ops_routes_include_navigation_and_breadcrumb_markers() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let cases = [("/ops", "command-center"), ("/ops/login", "login")];
+
+    for (route, breadcrumb_current) in cases {
+        let response = client
+            .get(format!("http://{addr}{route}"))
+            .send()
+            .await
+            .expect("ops route request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.text().await.expect("read ops route body");
+        assert_eq!(body.matches("data-nav-item=").count(), 14);
+        assert!(body.contains("id=\"tau-ops-breadcrumbs\""));
+        assert!(body.contains("id=\"tau-ops-breadcrumb-current\""));
+        assert!(body.contains(&format!("data-breadcrumb-current=\"{breadcrumb_current}\"")));
+    }
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_webchat_endpoint_returns_html_shell() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 10_000, "secret");
