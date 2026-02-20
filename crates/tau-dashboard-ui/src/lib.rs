@@ -123,6 +123,74 @@ impl TauOpsDashboardRoute {
             Self::Login => "Login",
         }
     }
+
+    fn shell_path(self) -> &'static str {
+        match self {
+            Self::Ops => "/ops",
+            Self::Agents => "/ops/agents",
+            Self::AgentDetail => "/ops/agents/default",
+            Self::Chat => "/ops/chat",
+            Self::Sessions => "/ops/sessions",
+            Self::Memory => "/ops/memory",
+            Self::MemoryGraph => "/ops/memory-graph",
+            Self::ToolsJobs => "/ops/tools-jobs",
+            Self::Channels => "/ops/channels",
+            Self::Config => "/ops/config",
+            Self::Training => "/ops/training",
+            Self::Safety => "/ops/safety",
+            Self::Diagnostics => "/ops/diagnostics",
+            Self::Deploy => "/ops/deploy",
+            Self::Login => "/ops/login",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Public enum `TauOpsDashboardTheme` in `tau-dashboard-ui`.
+pub enum TauOpsDashboardTheme {
+    Dark,
+    Light,
+}
+
+impl TauOpsDashboardTheme {
+    /// Public `fn` `as_str` in `tau-dashboard-ui`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::Light => "light",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Public enum `TauOpsDashboardSidebarState` in `tau-dashboard-ui`.
+pub enum TauOpsDashboardSidebarState {
+    Expanded,
+    Collapsed,
+}
+
+impl TauOpsDashboardSidebarState {
+    /// Public `fn` `as_str` in `tau-dashboard-ui`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Expanded => "expanded",
+            Self::Collapsed => "collapsed",
+        }
+    }
+
+    fn toggled(self) -> Self {
+        match self {
+            Self::Expanded => Self::Collapsed,
+            Self::Collapsed => Self::Expanded,
+        }
+    }
+
+    fn aria_expanded(self) -> &'static str {
+        match self {
+            Self::Expanded => "true",
+            Self::Collapsed => "false",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +198,8 @@ impl TauOpsDashboardRoute {
 pub struct TauOpsDashboardShellContext {
     pub auth_mode: TauOpsDashboardAuthMode,
     pub active_route: TauOpsDashboardRoute,
+    pub theme: TauOpsDashboardTheme,
+    pub sidebar_state: TauOpsDashboardSidebarState,
 }
 
 impl Default for TauOpsDashboardShellContext {
@@ -137,6 +207,8 @@ impl Default for TauOpsDashboardShellContext {
         Self {
             auth_mode: TauOpsDashboardAuthMode::Token,
             active_route: TauOpsDashboardRoute::Ops,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
         }
     }
 }
@@ -152,8 +224,26 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     let login_required = auth_mode.requires_authentication();
     let auth_mode_attr = auth_mode.as_str();
     let active_route_attr = context.active_route.as_str();
+    let active_shell_path = context.active_route.shell_path();
+    let theme_attr = context.theme.as_str();
+    let sidebar_state_attr = context.sidebar_state.as_str();
     let breadcrumb_current = context.active_route.breadcrumb_token();
     let breadcrumb_label = context.active_route.breadcrumb_label();
+    let sidebar_toggle_target_state = context.sidebar_state.toggled().as_str();
+    let sidebar_toggle_href =
+        format!("{active_shell_path}?theme={theme_attr}&sidebar={sidebar_toggle_target_state}");
+    let dark_theme_href = format!("{active_shell_path}?theme=dark&sidebar={sidebar_state_attr}");
+    let light_theme_href = format!("{active_shell_path}?theme=light&sidebar={sidebar_state_attr}");
+    let dark_theme_pressed = if matches!(context.theme, TauOpsDashboardTheme::Dark) {
+        "true"
+    } else {
+        "false"
+    };
+    let light_theme_pressed = if matches!(context.theme, TauOpsDashboardTheme::Light) {
+        "true"
+    } else {
+        "false"
+    };
     let login_hidden = if matches!(context.active_route, TauOpsDashboardRoute::Login) {
         "false"
     } else {
@@ -166,10 +256,52 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     };
 
     let shell = view! {
-        <div id="tau-ops-shell" data-app="tau-ops-dashboard">
+        <div
+            id="tau-ops-shell"
+            data-app="tau-ops-dashboard"
+            data-theme=theme_attr
+            data-sidebar-state=sidebar_state_attr
+            data-sidebar-mobile-default="collapsed"
+        >
             <header id="tau-ops-header">
                 <h1>Tau Ops Dashboard</h1>
                 <p>Leptos SSR foundation shell</p>
+                <div id="tau-ops-shell-controls">
+                    <input
+                        id="tau-ops-sidebar-toggle"
+                        type="checkbox"
+                        data-sidebar-state=sidebar_state_attr
+                        aria-hidden="true"
+                    />
+                    <a
+                        id="tau-ops-sidebar-hamburger"
+                        data-sidebar-toggle="true"
+                        data-sidebar-target-state=sidebar_toggle_target_state
+                        aria-controls="tau-ops-sidebar"
+                        aria-expanded=context.sidebar_state.aria_expanded()
+                        href=sidebar_toggle_href
+                    >
+                        Toggle Navigation
+                    </a>
+                    <div id="tau-ops-theme-controls" role="group" aria-label="Theme controls">
+                        <a
+                            id="tau-ops-theme-toggle-dark"
+                            data-theme-option="dark"
+                            aria-pressed=dark_theme_pressed
+                            href=dark_theme_href
+                        >
+                            Dark
+                        </a>
+                        <a
+                            id="tau-ops-theme-toggle-light"
+                            data-theme-option="light"
+                            aria-pressed=light_theme_pressed
+                            href=light_theme_href
+                        >
+                            Light
+                        </a>
+                    </div>
+                </div>
                 <nav
                     id="tau-ops-breadcrumbs"
                     aria-label="Tau Ops breadcrumbs"
@@ -276,6 +408,7 @@ mod tests {
     use super::{
         render_tau_ops_dashboard_shell, render_tau_ops_dashboard_shell_with_context,
         TauOpsDashboardAuthMode, TauOpsDashboardRoute, TauOpsDashboardShellContext,
+        TauOpsDashboardSidebarState, TauOpsDashboardTheme,
     };
 
     #[test]
@@ -311,6 +444,8 @@ mod tests {
         let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
             auth_mode: TauOpsDashboardAuthMode::PasswordSession,
             active_route: TauOpsDashboardRoute::Login,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
         });
         assert!(html.contains("data-auth-mode=\"password-session\""));
         assert!(html.contains("data-active-route=\"login\""));
@@ -324,6 +459,8 @@ mod tests {
         let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
             auth_mode: TauOpsDashboardAuthMode::None,
             active_route: TauOpsDashboardRoute::Ops,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
         });
         assert!(html.contains("data-auth-mode=\"none\""));
         assert!(html.contains("data-login-required=\"false\""));
@@ -372,6 +509,8 @@ mod tests {
         let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
             auth_mode: TauOpsDashboardAuthMode::PasswordSession,
             active_route: TauOpsDashboardRoute::Login,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
         });
         assert!(html.contains("id=\"tau-ops-breadcrumbs\""));
         assert!(html.contains("data-breadcrumb-current=\"login\""));
@@ -414,11 +553,58 @@ mod tests {
             let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
                 auth_mode: TauOpsDashboardAuthMode::Token,
                 active_route: route,
+                theme: TauOpsDashboardTheme::Dark,
+                sidebar_state: TauOpsDashboardSidebarState::Expanded,
             });
             assert!(html.contains(&format!("data-active-route=\"{expected_active_route}\"")));
             assert!(html.contains(&format!(
                 "data-breadcrumb-current=\"{expected_breadcrumb}\""
             )));
         }
+    }
+
+    #[test]
+    fn functional_spec_2798_c01_c02_c03_shell_exposes_responsive_and_theme_contract_markers() {
+        let html = render_tau_ops_dashboard_shell();
+        assert!(html.contains("id=\"tau-ops-shell-controls\""));
+        assert!(html.contains("id=\"tau-ops-sidebar-toggle\""));
+        assert!(html.contains("id=\"tau-ops-sidebar-hamburger\""));
+        assert!(html.contains("data-sidebar-mobile-default=\"collapsed\""));
+        assert!(html.contains("data-sidebar-state=\"expanded\""));
+        assert!(html.contains("data-theme=\"dark\""));
+        assert!(html.contains("id=\"tau-ops-theme-toggle-dark\""));
+        assert!(html.contains("id=\"tau-ops-theme-toggle-light\""));
+    }
+
+    #[test]
+    fn functional_spec_2798_c02_shell_sidebar_collapsed_state_updates_toggle_markers() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Ops,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        });
+        assert!(html.contains("data-sidebar-state=\"collapsed\""));
+        assert!(html.contains("data-sidebar-target-state=\"expanded\""));
+        assert!(html.contains("aria-expanded=\"false\""));
+        assert!(html.contains("href=\"/ops?theme=dark&amp;sidebar=expanded\""));
+    }
+
+    #[test]
+    fn functional_spec_2798_c03_shell_light_theme_state_updates_theme_markers() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Chat,
+            theme: TauOpsDashboardTheme::Light,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
+        });
+        assert!(html.contains("data-theme=\"light\""));
+        assert!(html.contains(
+            "id=\"tau-ops-theme-toggle-dark\" data-theme-option=\"dark\" aria-pressed=\"false\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-theme-toggle-light\" data-theme-option=\"light\" aria-pressed=\"true\""
+        ));
+        assert!(html.contains("href=\"/ops/chat?theme=dark&amp;sidebar=expanded\""));
     }
 }
