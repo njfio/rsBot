@@ -70,6 +70,7 @@ mod deploy_runtime;
 mod jobs_runtime;
 mod multi_channel_status;
 mod openai_compat;
+mod ops_shell_controls;
 mod request_translation;
 mod safety_runtime;
 mod session_runtime;
@@ -108,6 +109,7 @@ use openai_compat::{
     translate_chat_completions_request, translate_completions_request,
     OpenAiChatCompletionsRequest, OpenAiCompletionsRequest,
 };
+use ops_shell_controls::OpsShellControlsQuery;
 use request_translation::{sanitize_session_key, translate_openresponses_request};
 use safety_runtime::{
     handle_gateway_safety_policy_get, handle_gateway_safety_policy_put,
@@ -1035,12 +1037,14 @@ fn resolve_tau_ops_dashboard_auth_mode(
 fn render_tau_ops_dashboard_shell_for_route(
     state: &Arc<GatewayOpenResponsesServerState>,
     route: TauOpsDashboardRoute,
+    controls: OpsShellControlsQuery,
 ) -> Html<String> {
     Html(render_tau_ops_dashboard_shell_with_context(
         TauOpsDashboardShellContext {
             auth_mode: resolve_tau_ops_dashboard_auth_mode(state.config.auth_mode),
             active_route: route,
-            ..TauOpsDashboardShellContext::default()
+            theme: controls.theme(),
+            sidebar_state: controls.sidebar_state(),
         },
     ))
 }
@@ -1049,8 +1053,9 @@ macro_rules! define_ops_shell_handler {
     ($handler_name:ident, $route:expr) => {
         async fn $handler_name(
             State(state): State<Arc<GatewayOpenResponsesServerState>>,
+            Query(controls): Query<OpsShellControlsQuery>,
         ) -> Html<String> {
-            render_tau_ops_dashboard_shell_for_route(&state, $route)
+            render_tau_ops_dashboard_shell_for_route(&state, $route, controls)
         }
     };
 }
@@ -1112,8 +1117,9 @@ define_ops_shell_handler!(
 async fn handle_ops_dashboard_agent_detail_shell_page(
     State(state): State<Arc<GatewayOpenResponsesServerState>>,
     AxumPath(_agent_id): AxumPath<String>,
+    Query(controls): Query<OpsShellControlsQuery>,
 ) -> Html<String> {
-    render_tau_ops_dashboard_shell_for_route(&state, TauOpsDashboardRoute::AgentDetail)
+    render_tau_ops_dashboard_shell_for_route(&state, TauOpsDashboardRoute::AgentDetail, controls)
 }
 
 async fn handle_dashboard_shell_page() -> Html<String> {
