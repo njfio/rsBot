@@ -3534,6 +3534,184 @@ async fn regression_spec_2704_c03_c04_cortex_status_endpoint_rejects_unauthorize
 }
 
 #[tokio::test]
+async fn integration_spec_2708_c01_c02_c03_cortex_status_counts_memory_and_worker_progress_events()
+{
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let memory_write = client
+        .put(format!(
+            "http://{addr}{}",
+            expand_session_template(GATEWAY_MEMORY_ENDPOINT, "default")
+        ))
+        .bearer_auth("secret")
+        .json(&json!({
+            "content": "memory entry body from #2708",
+            "policy_gate": "allow_memory_write"
+        }))
+        .send()
+        .await
+        .expect("memory write response");
+    assert_eq!(memory_write.status(), StatusCode::OK);
+
+    let memory_entry_write = client
+        .put(format!(
+            "http://{addr}{}",
+            expand_memory_entry_template(GATEWAY_MEMORY_ENTRY_ENDPOINT, "default", "entry-2708")
+        ))
+        .bearer_auth("secret")
+        .json(&json!({
+            "summary": "memory summary 2708",
+            "policy_gate": "allow_memory_write"
+        }))
+        .send()
+        .await
+        .expect("memory entry write response");
+    assert_eq!(memory_entry_write.status(), StatusCode::CREATED);
+
+    let memory_entry_delete = client
+        .delete(format!(
+            "http://{addr}{}",
+            expand_memory_entry_template(GATEWAY_MEMORY_ENTRY_ENDPOINT, "default", "entry-2708")
+        ))
+        .bearer_auth("secret")
+        .json(&json!({
+            "policy_gate": "allow_memory_write"
+        }))
+        .send()
+        .await
+        .expect("memory entry delete response");
+    assert_eq!(memory_entry_delete.status(), StatusCode::OK);
+
+    let opened = client
+        .post(format!(
+            "http://{addr}{EXTERNAL_CODING_AGENT_SESSIONS_ENDPOINT}"
+        ))
+        .bearer_auth("secret")
+        .json(&json!({"workspace_id":"workspace-cortex-2708"}))
+        .send()
+        .await
+        .expect("open external coding session")
+        .json::<Value>()
+        .await
+        .expect("parse open session payload");
+    let session_id = opened["session"]["session_id"]
+        .as_str()
+        .expect("session id")
+        .to_string();
+
+    let progress = client
+        .post(format!(
+            "http://{addr}{}",
+            resolve_session_endpoint(
+                EXTERNAL_CODING_AGENT_SESSION_PROGRESS_ENDPOINT,
+                session_id.as_str()
+            )
+        ))
+        .bearer_auth("secret")
+        .json(&json!({
+            "message": "progress event 2708"
+        }))
+        .send()
+        .await
+        .expect("progress response");
+    assert_eq!(progress.status(), StatusCode::OK);
+
+    let followup = client
+        .post(format!(
+            "http://{addr}{}",
+            resolve_session_endpoint(
+                EXTERNAL_CODING_AGENT_SESSION_FOLLOWUPS_ENDPOINT,
+                session_id.as_str()
+            )
+        ))
+        .bearer_auth("secret")
+        .json(&json!({
+            "message": "followup event 2708"
+        }))
+        .send()
+        .await
+        .expect("followup response");
+    assert_eq!(followup.status(), StatusCode::OK);
+
+    let status = client
+        .get("http://".to_string() + &addr.to_string() + "/cortex/status")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("cortex status response");
+    assert_eq!(status.status(), StatusCode::OK);
+    let payload = status
+        .json::<Value>()
+        .await
+        .expect("parse cortex status payload");
+    assert!(payload["event_type_counts"]["memory.write"]
+        .as_u64()
+        .map(|count| count >= 1)
+        .unwrap_or(false));
+    assert!(payload["event_type_counts"]["memory.entry_write"]
+        .as_u64()
+        .map(|count| count >= 1)
+        .unwrap_or(false));
+    assert!(payload["event_type_counts"]["memory.entry_delete"]
+        .as_u64()
+        .map(|count| count >= 1)
+        .unwrap_or(false));
+    assert!(
+        payload["event_type_counts"]["external_coding_agent.progress"]
+            .as_u64()
+            .map(|count| count >= 1)
+            .unwrap_or(false)
+    );
+    assert!(
+        payload["event_type_counts"]["external_coding_agent.followup_queued"]
+            .as_u64()
+            .map(|count| count >= 1)
+            .unwrap_or(false)
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2708_c04_c05_cortex_status_rejects_unauthorized_and_keeps_missing_state_fallback(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let unauthorized = client
+        .get("http://".to_string() + &addr.to_string() + "/cortex/status")
+        .send()
+        .await
+        .expect("unauthorized cortex status response");
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let authorized = client
+        .get("http://".to_string() + &addr.to_string() + "/cortex/status")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("authorized cortex status response");
+    assert_eq!(authorized.status(), StatusCode::OK);
+    let payload = authorized
+        .json::<Value>()
+        .await
+        .expect("parse authorized cortex status payload");
+    assert_eq!(payload["state_present"], Value::Bool(false));
+    assert_eq!(payload["total_events"], Value::Number(0_u64.into()));
+    assert!(payload["diagnostics"]
+        .as_array()
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn regression_gateway_memory_graph_endpoint_rejects_unauthorized_requests() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 10_000, "secret");

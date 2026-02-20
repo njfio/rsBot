@@ -1,4 +1,14 @@
 {
   "schema_version": 1,
-  "exemptions": []
+  "exemptions": [
+    {
+      "path": "crates/tau-gateway/src/gateway_openresponses.rs",
+      "threshold_lines": 4300,
+      "owner_issue": 2708,
+      "rationale": "Bounded Cortex observer parity slices are landing while gateway_openresponses handler decomposition is tracked as follow-up engineering work.",
+      "approved_by": "codex",
+      "approved_at": "2026-02-20",
+      "expires_on": "2026-03-31"
+    }
+  ]
 }
