@@ -145,6 +145,7 @@ const GATEWAY_SESSION_RESET_ENDPOINT: &str = "/gateway/sessions/{session_key}/re
 const GATEWAY_MEMORY_ENDPOINT: &str = "/gateway/memory/{session_key}";
 const GATEWAY_MEMORY_ENTRY_ENDPOINT: &str = "/gateway/memory/{session_key}/{entry_id}";
 const GATEWAY_MEMORY_GRAPH_ENDPOINT: &str = "/gateway/memory-graph/{session_key}";
+const API_MEMORIES_GRAPH_ENDPOINT: &str = "/api/memories/graph";
 const GATEWAY_CHANNEL_LIFECYCLE_ENDPOINT: &str = "/gateway/channels/{channel}/lifecycle";
 const GATEWAY_CONFIG_ENDPOINT: &str = "/gateway/config";
 const GATEWAY_SAFETY_POLICY_ENDPOINT: &str = "/gateway/safety/policy";
@@ -825,6 +826,7 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
             GATEWAY_MEMORY_GRAPH_ENDPOINT,
             get(handle_gateway_memory_graph),
         )
+        .route(API_MEMORIES_GRAPH_ENDPOINT, get(handle_api_memories_graph))
         .route(
             GATEWAY_CHANNEL_LIFECYCLE_ENDPOINT,
             post(handle_gateway_channel_lifecycle_action),
@@ -986,6 +988,7 @@ async fn handle_gateway_status(
                     "memory_endpoint": GATEWAY_MEMORY_ENDPOINT,
                     "memory_entry_endpoint": GATEWAY_MEMORY_ENTRY_ENDPOINT,
                     "memory_graph_endpoint": GATEWAY_MEMORY_GRAPH_ENDPOINT,
+                    "memory_graph_api_endpoint": API_MEMORIES_GRAPH_ENDPOINT,
                     "channel_lifecycle_endpoint": GATEWAY_CHANNEL_LIFECYCLE_ENDPOINT,
                     "config_endpoint": GATEWAY_CONFIG_ENDPOINT,
                     "safety_policy_endpoint": GATEWAY_SAFETY_POLICY_ENDPOINT,
@@ -2709,20 +2712,48 @@ async fn handle_gateway_memory_graph(
     if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
         return error.into_response();
     }
-    let session_key = sanitize_session_key(session_key.as_str());
-    let memory_path = gateway_memory_path(&state.config.state_dir, &session_key);
+    match build_gateway_memory_graph_response(&state, session_key.as_str(), &query) {
+        Ok(payload) => {
+            state.record_ui_telemetry_event("memory", "graph", "memory_graph_requested");
+            (StatusCode::OK, Json(payload)).into_response()
+        }
+        Err(error) => error.into_response(),
+    }
+}
+
+async fn handle_api_memories_graph(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    headers: HeaderMap,
+    Query(query): Query<GatewayMemoryGraphQuery>,
+) -> Response {
+    if let Err(error) = authorize_and_enforce_gateway_limits(&state, &headers) {
+        return error.into_response();
+    }
+    let requested_session = query.session_key.as_deref().unwrap_or(DEFAULT_SESSION_KEY);
+    match build_gateway_memory_graph_response(&state, requested_session, &query) {
+        Ok(payload) => {
+            state.record_ui_telemetry_event("memory", "graph", "memory_graph_requested");
+            (StatusCode::OK, Json(payload)).into_response()
+        }
+        Err(error) => error.into_response(),
+    }
+}
+
+fn build_gateway_memory_graph_response(
+    state: &GatewayOpenResponsesServerState,
+    session_key_raw: &str,
+    query: &GatewayMemoryGraphQuery,
+) -> Result<GatewayMemoryGraphResponse, OpenResponsesApiError> {
+    let session_key = sanitize_session_key(session_key_raw);
+    let memory_path = gateway_memory_path(&state.config.state_dir, session_key.as_str());
     let exists = memory_path.exists();
     let content = if exists {
-        match std::fs::read_to_string(&memory_path) {
-            Ok(content) => content,
-            Err(error) => {
-                return OpenResponsesApiError::internal(format!(
-                    "failed to read memory '{}': {error}",
-                    memory_path.display()
-                ))
-                .into_response();
-            }
-        }
+        std::fs::read_to_string(&memory_path).map_err(|error| {
+            OpenResponsesApiError::internal(format!(
+                "failed to read memory '{}': {error}",
+                memory_path.display()
+            ))
+        })?
     } else {
         String::new()
     };
@@ -2733,26 +2764,21 @@ async fn handle_gateway_memory_graph(
     let nodes = build_memory_graph_nodes(&content, max_nodes);
     let edges = build_memory_graph_edges(&nodes, &relation_types, min_edge_weight);
 
-    state.record_ui_telemetry_event("memory", "graph", "memory_graph_requested");
-    (
-        StatusCode::OK,
-        Json(GatewayMemoryGraphResponse {
-            session_key,
-            path: memory_path.display().to_string(),
-            exists,
-            bytes: content.len(),
-            node_count: nodes.len(),
-            edge_count: edges.len(),
-            nodes,
-            edges,
-            filters: GatewayMemoryGraphFilterSummary {
-                max_nodes,
-                min_edge_weight,
-                relation_types,
-            },
-        }),
-    )
-        .into_response()
+    Ok(GatewayMemoryGraphResponse {
+        session_key,
+        path: memory_path.display().to_string(),
+        exists,
+        bytes: content.len(),
+        node_count: nodes.len(),
+        edge_count: edges.len(),
+        nodes,
+        edges,
+        filters: GatewayMemoryGraphFilterSummary {
+            max_nodes,
+            min_edge_weight,
+            relation_types,
+        },
+    })
 }
 
 async fn handle_gateway_config_get(

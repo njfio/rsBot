@@ -188,6 +188,8 @@ pub(super) struct GatewayMemoryRelationInput {
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct GatewayMemoryGraphQuery {
     #[serde(default)]
+    pub(super) session_key: Option<String>,
+    #[serde(default)]
     pub(super) max_nodes: Option<usize>,
     #[serde(default)]
     pub(super) min_edge_weight: Option<f64>,
