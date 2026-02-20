@@ -197,6 +197,32 @@ fn spec_c05_accessibility_reduced_motion_marker_exists() {
 }
 
 #[test]
+fn spec_c01_performance_contract_declares_wasm_budget_marker() {
+    let html = render_tau_ops_dashboard_shell();
+    assert!(html.contains("id=\"tau-ops-performance-contract\""));
+    assert!(html.contains("data-wasm-budget-gzip-kb=\"500\""));
+}
+
+#[test]
+fn spec_c02_performance_contract_declares_lcp_budget_marker() {
+    let html = render_tau_ops_dashboard_shell();
+    assert!(html.contains("data-lcp-budget-ms=\"1500\""));
+}
+
+#[test]
+fn spec_c03_performance_contract_declares_layout_shift_skeleton_markers() {
+    let html = render_tau_ops_dashboard_shell();
+    assert!(html.contains("data-layout-shift-budget=\"0.00\""));
+    assert!(html.contains("data-layout-shift-mitigation=\"skeletons\""));
+}
+
+#[test]
+fn spec_c04_performance_contract_declares_websocket_processing_budget_marker() {
+    let html = render_tau_ops_dashboard_shell();
+    assert!(html.contains("data-websocket-process-budget-ms=\"50\""));
+}
+
+#[test]
 fn functional_spec_2786_c03_shell_exposes_auth_bootstrap_markers() {
     let html = render_tau_ops_dashboard_shell();
     assert!(html.contains("id=\"tau-ops-auth-shell\""));

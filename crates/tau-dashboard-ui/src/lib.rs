@@ -1231,6 +1231,17 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                             <h2>Real-Time Stream Contracts</h2>
                         </section>
                         <section
+                            id="tau-ops-performance-contract"
+                            data-component="PerformanceBudgetContract"
+                            data-wasm-budget-gzip-kb="500"
+                            data-lcp-budget-ms="1500"
+                            data-layout-shift-budget="0.00"
+                            data-layout-shift-mitigation="skeletons"
+                            data-websocket-process-budget-ms="50"
+                        >
+                            <h2>Performance Budgets</h2>
+                        </section>
+                        <section
                             id="tau-ops-chat-panel"
                             data-route="/ops/chat"
                             aria-hidden=chat_panel_hidden
