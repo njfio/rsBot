@@ -32,7 +32,10 @@ use tau_agent_core::{
 };
 use tau_ai::{LlmClient, Message, MessageRole, StreamDeltaHandler};
 use tau_core::{current_unix_timestamp, current_unix_timestamp_ms, write_text_atomic};
-use tau_dashboard_ui::render_tau_ops_dashboard_shell;
+use tau_dashboard_ui::{
+    render_tau_ops_dashboard_shell_with_context, TauOpsDashboardAuthMode, TauOpsDashboardRoute,
+    TauOpsDashboardShellContext,
+};
 use tau_memory::memory_contract::{MemoryEntry, MemoryScope};
 use tau_memory::runtime::{
     FileMemoryStore, MemoryRelationInput, MemoryScopeFilter, MemorySearchMatch,
@@ -117,18 +120,19 @@ use session_runtime::{
 use tools_runtime::{handle_gateway_tools_inventory, handle_gateway_tools_stats};
 use training_runtime::{handle_gateway_training_config_patch, handle_gateway_training_rollouts};
 use types::{
-    GatewayAuthSessionRequest, GatewayAuthSessionResponse, GatewayChannelLifecycleRequest,
-    GatewayConfigPatchRequest, GatewayExternalCodingAgentFollowupsDrainRequest,
-    GatewayExternalCodingAgentMessageRequest, GatewayExternalCodingAgentReapRequest,
-    GatewayExternalCodingAgentSessionOpenRequest, GatewayExternalCodingAgentStreamQuery,
-    GatewayMemoryEntryDeleteRequest, GatewayMemoryEntryUpsertRequest, GatewayMemoryGraphEdge,
-    GatewayMemoryGraphFilterSummary, GatewayMemoryGraphNode, GatewayMemoryGraphQuery,
-    GatewayMemoryGraphResponse, GatewayMemoryReadQuery, GatewayMemoryUpdateRequest,
-    GatewaySafetyPolicyUpdateRequest, GatewaySafetyRulesUpdateRequest, GatewaySafetyTestRequest,
-    GatewaySessionAppendRequest, GatewaySessionResetRequest, GatewayUiTelemetryRequest,
-    OpenResponsesApiError, OpenResponsesExecutionResult, OpenResponsesOutputItem,
-    OpenResponsesOutputTextItem, OpenResponsesPrompt, OpenResponsesRequest, OpenResponsesResponse,
-    OpenResponsesUsage, OpenResponsesUsageSummary, SseFrame,
+    GatewayAuthBootstrapResponse, GatewayAuthSessionRequest, GatewayAuthSessionResponse,
+    GatewayChannelLifecycleRequest, GatewayConfigPatchRequest,
+    GatewayExternalCodingAgentFollowupsDrainRequest, GatewayExternalCodingAgentMessageRequest,
+    GatewayExternalCodingAgentReapRequest, GatewayExternalCodingAgentSessionOpenRequest,
+    GatewayExternalCodingAgentStreamQuery, GatewayMemoryEntryDeleteRequest,
+    GatewayMemoryEntryUpsertRequest, GatewayMemoryGraphEdge, GatewayMemoryGraphFilterSummary,
+    GatewayMemoryGraphNode, GatewayMemoryGraphQuery, GatewayMemoryGraphResponse,
+    GatewayMemoryReadQuery, GatewayMemoryUpdateRequest, GatewaySafetyPolicyUpdateRequest,
+    GatewaySafetyRulesUpdateRequest, GatewaySafetyTestRequest, GatewaySessionAppendRequest,
+    GatewaySessionResetRequest, GatewayUiTelemetryRequest, OpenResponsesApiError,
+    OpenResponsesExecutionResult, OpenResponsesOutputItem, OpenResponsesOutputTextItem,
+    OpenResponsesPrompt, OpenResponsesRequest, OpenResponsesResponse, OpenResponsesUsage,
+    OpenResponsesUsageSummary, SseFrame,
 };
 use webchat_page::render_gateway_webchat_page;
 use websocket::run_gateway_ws_connection;
@@ -138,10 +142,12 @@ const OPENAI_CHAT_COMPLETIONS_ENDPOINT: &str = "/v1/chat/completions";
 const OPENAI_COMPLETIONS_ENDPOINT: &str = "/v1/completions";
 const OPENAI_MODELS_ENDPOINT: &str = "/v1/models";
 const OPS_DASHBOARD_ENDPOINT: &str = "/ops";
+const OPS_DASHBOARD_LOGIN_ENDPOINT: &str = "/ops/login";
 const DASHBOARD_SHELL_ENDPOINT: &str = "/dashboard";
 const WEBCHAT_ENDPOINT: &str = "/webchat";
 const GATEWAY_STATUS_ENDPOINT: &str = "/gateway/status";
 const GATEWAY_WS_ENDPOINT: &str = "/gateway/ws";
+const GATEWAY_AUTH_BOOTSTRAP_ENDPOINT: &str = "/gateway/auth/bootstrap";
 const GATEWAY_AUTH_SESSION_ENDPOINT: &str = "/gateway/auth/session";
 const GATEWAY_SESSIONS_ENDPOINT: &str = "/gateway/sessions";
 const GATEWAY_SESSION_DETAIL_ENDPOINT: &str = "/gateway/sessions/{session_key}";
@@ -923,8 +929,16 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
             post(handle_external_coding_agent_reap),
         )
         .route(OPS_DASHBOARD_ENDPOINT, get(handle_ops_dashboard_shell_page))
+        .route(
+            OPS_DASHBOARD_LOGIN_ENDPOINT,
+            get(handle_ops_dashboard_login_shell_page),
+        )
         .route(DASHBOARD_SHELL_ENDPOINT, get(handle_dashboard_shell_page))
         .route(WEBCHAT_ENDPOINT, get(handle_webchat_page))
+        .route(
+            GATEWAY_AUTH_BOOTSTRAP_ENDPOINT,
+            get(handle_gateway_auth_bootstrap),
+        )
         .route(GATEWAY_STATUS_ENDPOINT, get(handle_gateway_status))
         .route(DASHBOARD_HEALTH_ENDPOINT, get(handle_dashboard_health))
         .route(DASHBOARD_WIDGETS_ENDPOINT, get(handle_dashboard_widgets))
@@ -943,12 +957,62 @@ async fn handle_webchat_page() -> Html<String> {
     Html(render_gateway_webchat_page())
 }
 
-async fn handle_ops_dashboard_shell_page() -> Html<String> {
-    Html(render_tau_ops_dashboard_shell())
+fn resolve_tau_ops_dashboard_auth_mode(
+    mode: GatewayOpenResponsesAuthMode,
+) -> TauOpsDashboardAuthMode {
+    match mode {
+        GatewayOpenResponsesAuthMode::Token => TauOpsDashboardAuthMode::Token,
+        GatewayOpenResponsesAuthMode::PasswordSession => TauOpsDashboardAuthMode::PasswordSession,
+        GatewayOpenResponsesAuthMode::LocalhostDev => TauOpsDashboardAuthMode::None,
+    }
+}
+
+async fn handle_ops_dashboard_shell_page(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+) -> Html<String> {
+    Html(render_tau_ops_dashboard_shell_with_context(
+        TauOpsDashboardShellContext {
+            auth_mode: resolve_tau_ops_dashboard_auth_mode(state.config.auth_mode),
+            active_route: TauOpsDashboardRoute::Ops,
+        },
+    ))
+}
+
+async fn handle_ops_dashboard_login_shell_page(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+) -> Html<String> {
+    Html(render_tau_ops_dashboard_shell_with_context(
+        TauOpsDashboardShellContext {
+            auth_mode: resolve_tau_ops_dashboard_auth_mode(state.config.auth_mode),
+            active_route: TauOpsDashboardRoute::Login,
+        },
+    ))
 }
 
 async fn handle_dashboard_shell_page() -> Html<String> {
     Html(render_gateway_dashboard_shell_page())
+}
+
+async fn handle_gateway_auth_bootstrap(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+) -> Response {
+    if let Err(error) = enforce_gateway_rate_limit(&state, "gateway_auth_bootstrap") {
+        return error.into_response();
+    }
+
+    let auth_mode = resolve_tau_ops_dashboard_auth_mode(state.config.auth_mode);
+    (
+        StatusCode::OK,
+        Json(GatewayAuthBootstrapResponse {
+            auth_mode: state.config.auth_mode.as_str().to_string(),
+            ui_auth_mode: auth_mode.as_str().to_string(),
+            requires_authentication: auth_mode.requires_authentication(),
+            ops_endpoint: OPS_DASHBOARD_ENDPOINT,
+            ops_login_endpoint: OPS_DASHBOARD_LOGIN_ENDPOINT,
+            auth_session_endpoint: GATEWAY_AUTH_SESSION_ENDPOINT,
+        }),
+    )
+        .into_response()
 }
 
 async fn handle_gateway_status(
@@ -1030,7 +1094,10 @@ async fn handle_gateway_status(
                     "telemetry_runtime": state.collect_ui_telemetry_status_report(),
                 },
                 "dashboard_shell_endpoint": DASHBOARD_SHELL_ENDPOINT,
+                "ops_dashboard_endpoint": OPS_DASHBOARD_ENDPOINT,
+                "ops_dashboard_login_endpoint": OPS_DASHBOARD_LOGIN_ENDPOINT,
                 "webchat_endpoint": WEBCHAT_ENDPOINT,
+                "auth_bootstrap_endpoint": GATEWAY_AUTH_BOOTSTRAP_ENDPOINT,
                 "auth_session_endpoint": GATEWAY_AUTH_SESSION_ENDPOINT,
                 "status_endpoint": GATEWAY_STATUS_ENDPOINT,
                 "ws_endpoint": GATEWAY_WS_ENDPOINT,

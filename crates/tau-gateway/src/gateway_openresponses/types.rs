@@ -292,6 +292,16 @@ pub(super) struct GatewayAuthSessionResponse {
 }
 
 #[derive(Debug, Serialize)]
+pub(super) struct GatewayAuthBootstrapResponse {
+    pub(super) auth_mode: String,
+    pub(super) ui_auth_mode: String,
+    pub(super) requires_authentication: bool,
+    pub(super) ops_endpoint: &'static str,
+    pub(super) ops_login_endpoint: &'static str,
+    pub(super) auth_session_endpoint: &'static str,
+}
+
+#[derive(Debug, Serialize)]
 pub(super) struct GatewayMemoryGraphNode {
     pub(super) id: String,
     pub(super) label: String,

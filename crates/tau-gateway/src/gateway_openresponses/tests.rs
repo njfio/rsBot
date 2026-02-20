@@ -891,10 +891,103 @@ async fn functional_ops_dashboard_shell_endpoint_returns_leptos_foundation_shell
     assert!(body.contains("id=\"tau-ops-header\""));
     assert!(body.contains("id=\"tau-ops-sidebar\""));
     assert!(body.contains("id=\"tau-ops-command-center\""));
+    assert!(body.contains("id=\"tau-ops-auth-shell\""));
+    assert!(body.contains("data-active-route=\"ops\""));
     assert!(body.contains("data-component=\"HealthBadge\""));
     assert!(body.contains("data-component=\"StatCard\""));
     assert!(body.contains("data-component=\"AlertFeed\""));
     assert!(body.contains("data-component=\"DataTable\""));
+    handle.abort();
+}
+
+#[tokio::test]
+async fn functional_spec_2786_c01_gateway_auth_bootstrap_endpoint_reports_token_mode_contract() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let response = client
+        .get(format!("http://{addr}/gateway/auth/bootstrap"))
+        .send()
+        .await
+        .expect("auth bootstrap request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = response
+        .json::<Value>()
+        .await
+        .expect("parse auth bootstrap payload");
+    assert_eq!(payload["auth_mode"], Value::String("token".to_string()));
+    assert_eq!(payload["ui_auth_mode"], Value::String("token".to_string()));
+    assert_eq!(payload["requires_authentication"], Value::Bool(true));
+    assert_eq!(payload["ops_endpoint"], Value::String("/ops".to_string()));
+    assert_eq!(
+        payload["ops_login_endpoint"],
+        Value::String("/ops/login".to_string())
+    );
+    assert_eq!(
+        payload["auth_session_endpoint"],
+        Value::String("/gateway/auth/session".to_string())
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn functional_spec_2786_c02_gateway_auth_bootstrap_maps_localhost_dev_to_none_mode() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state_with_auth(
+        temp.path(),
+        4_096,
+        GatewayOpenResponsesAuthMode::LocalhostDev,
+        None,
+        None,
+        60,
+        120,
+    );
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let response = client
+        .get(format!("http://{addr}/gateway/auth/bootstrap"))
+        .send()
+        .await
+        .expect("auth bootstrap request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload = response
+        .json::<Value>()
+        .await
+        .expect("parse auth bootstrap payload");
+    assert_eq!(
+        payload["auth_mode"],
+        Value::String("localhost-dev".to_string())
+    );
+    assert_eq!(payload["ui_auth_mode"], Value::String("none".to_string()));
+    assert_eq!(payload["requires_authentication"], Value::Bool(false));
+    handle.abort();
+}
+
+#[tokio::test]
+async fn functional_spec_2786_c04_ops_login_shell_endpoint_returns_login_route_markers() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let response = client
+        .get(format!("http://{addr}/ops/login"))
+        .send()
+        .await
+        .expect("ops login shell request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response
+        .text()
+        .await
+        .expect("read ops login dashboard shell body");
+    assert!(body.contains("id=\"tau-ops-auth-shell\""));
+    assert!(body.contains("data-active-route=\"login\""));
+    assert!(body.contains("id=\"tau-ops-login-shell\""));
+    assert!(body.contains("data-route=\"/ops/login\""));
+    assert!(body.contains("id=\"tau-ops-protected-shell\""));
     handle.abort();
 }
 
