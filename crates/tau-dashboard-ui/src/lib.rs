@@ -57,6 +57,20 @@ impl TauOpsDashboardRoute {
             Self::Login => "login",
         }
     }
+
+    fn breadcrumb_token(self) -> &'static str {
+        match self {
+            Self::Ops => "command-center",
+            Self::Login => "login",
+        }
+    }
+
+    fn breadcrumb_label(self) -> &'static str {
+        match self {
+            Self::Ops => "Command Center",
+            Self::Login => "Login",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +100,8 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     let login_required = auth_mode.requires_authentication();
     let auth_mode_attr = auth_mode.as_str();
     let active_route_attr = context.active_route.as_str();
+    let breadcrumb_current = context.active_route.breadcrumb_token();
+    let breadcrumb_label = context.active_route.breadcrumb_label();
     let login_hidden = if matches!(context.active_route, TauOpsDashboardRoute::Login) {
         "false"
     } else {
@@ -102,15 +118,40 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
             <header id="tau-ops-header">
                 <h1>Tau Ops Dashboard</h1>
                 <p>Leptos SSR foundation shell</p>
+                <nav
+                    id="tau-ops-breadcrumbs"
+                    aria-label="Tau Ops breadcrumbs"
+                    data-breadcrumb-current=breadcrumb_current
+                >
+                    <ol>
+                        <li id="tau-ops-breadcrumb-home">
+                            <a href="/ops">Home</a>
+                        </li>
+                        <li id="tau-ops-breadcrumb-current">{breadcrumb_label}</li>
+                    </ol>
+                </nav>
             </header>
             <div id="tau-ops-layout">
                 <aside id="tau-ops-sidebar">
                     <nav aria-label="Tau Ops navigation">
                         <ul>
-                            <li><a href="/ops">Command Center</a></li>
-                            <li><a href="/ops/login">Operator Login</a></li>
-                            <li><a href="/dashboard">Legacy Dashboard</a></li>
-                            <li><a href="/webchat">Webchat</a></li>
+                            <li id="tau-ops-nav-command-center"><a data-nav-item="command-center" href="/ops">Command Center</a></li>
+                            <li id="tau-ops-nav-agent-fleet"><a data-nav-item="agent-fleet" href="/ops/agents">Agent Fleet</a></li>
+                            <li id="tau-ops-nav-agent-detail"><a data-nav-item="agent-detail" href="/ops/agents/default">Agent Detail</a></li>
+                            <li id="tau-ops-nav-chat"><a data-nav-item="chat" href="/ops/chat">Conversation / Chat</a></li>
+                            <li id="tau-ops-nav-sessions"><a data-nav-item="sessions" href="/ops/sessions">Sessions Explorer</a></li>
+                            <li id="tau-ops-nav-memory"><a data-nav-item="memory" href="/ops/memory">Memory Explorer</a></li>
+                            <li id="tau-ops-nav-memory-graph"><a data-nav-item="memory-graph" href="/ops/memory-graph">Memory Graph</a></li>
+                            <li id="tau-ops-nav-tools-jobs"><a data-nav-item="tools-jobs" href="/ops/tools-jobs">Tools & Jobs</a></li>
+                            <li id="tau-ops-nav-channels"><a data-nav-item="channels" href="/ops/channels">Multi-Channel</a></li>
+                            <li id="tau-ops-nav-config"><a data-nav-item="config" href="/ops/config">Configuration</a></li>
+                            <li id="tau-ops-nav-training"><a data-nav-item="training" href="/ops/training">Training & RL</a></li>
+                            <li id="tau-ops-nav-safety"><a data-nav-item="safety" href="/ops/safety">Safety & Security</a></li>
+                            <li id="tau-ops-nav-diagnostics"><a data-nav-item="diagnostics" href="/ops/diagnostics">Diagnostics & Audit</a></li>
+                            <li id="tau-ops-nav-deploy"><a data-nav-item="deploy" href="/ops/deploy">Deploy Agent</a></li>
+                            <li id="tau-ops-nav-login"><a href="/ops/login">Operator Login</a></li>
+                            <li id="tau-ops-nav-legacy-dashboard"><a href="/dashboard">Legacy Dashboard</a></li>
+                            <li id="tau-ops-nav-webchat"><a href="/webchat">Webchat</a></li>
                         </ul>
                     </nav>
                 </aside>
@@ -234,5 +275,54 @@ mod tests {
         });
         assert!(html.contains("data-auth-mode=\"none\""));
         assert!(html.contains("data-login-required=\"false\""));
+    }
+
+    #[test]
+    fn functional_spec_2790_c01_sidebar_includes_14_ops_route_links() {
+        let html = render_tau_ops_dashboard_shell();
+        assert_eq!(html.matches("data-nav-item=").count(), 14);
+
+        let expected_routes = [
+            "/ops",
+            "/ops/agents",
+            "/ops/agents/default",
+            "/ops/chat",
+            "/ops/sessions",
+            "/ops/memory",
+            "/ops/memory-graph",
+            "/ops/tools-jobs",
+            "/ops/channels",
+            "/ops/config",
+            "/ops/training",
+            "/ops/safety",
+            "/ops/diagnostics",
+            "/ops/deploy",
+        ];
+
+        for route in expected_routes {
+            assert!(
+                html.contains(&format!("href=\"{route}\"")),
+                "missing nav route {route}"
+            );
+        }
+    }
+
+    #[test]
+    fn functional_spec_2790_c02_breadcrumb_markers_reflect_ops_route() {
+        let html = render_tau_ops_dashboard_shell();
+        assert!(html.contains("id=\"tau-ops-breadcrumbs\""));
+        assert!(html.contains("data-breadcrumb-current=\"command-center\""));
+        assert!(html.contains("id=\"tau-ops-breadcrumb-current\""));
+    }
+
+    #[test]
+    fn functional_spec_2790_c03_breadcrumb_markers_reflect_login_route() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::PasswordSession,
+            active_route: TauOpsDashboardRoute::Login,
+        });
+        assert!(html.contains("id=\"tau-ops-breadcrumbs\""));
+        assert!(html.contains("data-breadcrumb-current=\"login\""));
+        assert!(html.contains("id=\"tau-ops-breadcrumb-current\""));
     }
 }
