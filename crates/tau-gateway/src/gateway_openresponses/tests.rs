@@ -356,6 +356,32 @@ invalid-json-line
     dashboard_root
 }
 
+fn write_dashboard_control_state_fixture(root: &Path) -> PathBuf {
+    let dashboard_root = root.join(".tau").join("dashboard");
+    std::fs::create_dir_all(&dashboard_root).expect("create dashboard root");
+    std::fs::write(
+        dashboard_root.join("control-state.json"),
+        r#"{
+  "schema_version": 1,
+  "mode": "paused",
+  "updated_unix_ms": 90210,
+  "last_action": {
+    "schema_version": 1,
+    "request_id": "dashboard-action-90210",
+    "action": "pause",
+    "actor": "ops-user",
+    "reason": "maintenance",
+    "status": "accepted",
+    "timestamp_unix_ms": 90210,
+    "control_mode": "paused"
+  }
+}
+"#,
+    )
+    .expect("write dashboard control state");
+    dashboard_root
+}
+
 fn write_training_runtime_fixture(root: &Path, failed: usize) -> PathBuf {
     let training_root = root.join(".tau").join("training");
     std::fs::create_dir_all(&training_root).expect("create training root");
@@ -1176,6 +1202,44 @@ async fn functional_spec_2806_c01_c02_c03_ops_shell_command_center_markers_refle
     assert!(body.contains("runtime backlog detected (queue_depth=1)"));
     assert!(body.contains("data-timeline-cycle-count=\"2\""));
     assert!(body.contains("data-timeline-invalid-cycle-count=\"1\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn functional_spec_2810_c01_c02_c03_ops_shell_control_markers_reflect_dashboard_control_snapshot(
+) {
+    let temp = tempdir().expect("tempdir");
+    write_dashboard_runtime_fixture(temp.path());
+    write_dashboard_control_state_fixture(temp.path());
+    write_training_runtime_fixture(temp.path(), 0);
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!("http://{addr}/ops"))
+        .send()
+        .await
+        .expect("ops shell request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops shell body");
+
+    assert!(body.contains("id=\"tau-ops-control-panel\""));
+    assert!(body.contains("data-control-mode=\"paused\""));
+    assert!(body.contains("data-rollout-gate=\"hold\""));
+    assert!(body.contains("data-control-paused=\"true\""));
+    assert!(body.contains("id=\"tau-ops-control-action-pause\""));
+    assert!(body.contains("id=\"tau-ops-control-action-resume\""));
+    assert!(body.contains("id=\"tau-ops-control-action-refresh\""));
+    assert!(body.contains("id=\"tau-ops-control-action-pause\" data-action-enabled=\"false\""));
+    assert!(body.contains("id=\"tau-ops-control-action-resume\" data-action-enabled=\"true\""));
+    assert!(body.contains("id=\"tau-ops-control-action-refresh\" data-action-enabled=\"true\""));
+    assert!(body.contains("id=\"tau-ops-control-last-action\""));
+    assert!(body.contains("data-last-action-request-id=\"dashboard-action-90210\""));
+    assert!(body.contains("data-last-action-name=\"pause\""));
+    assert!(body.contains("data-last-action-actor=\"ops-user\""));
+    assert!(body.contains("data-last-action-timestamp=\"90210\""));
 
     handle.abort();
 }

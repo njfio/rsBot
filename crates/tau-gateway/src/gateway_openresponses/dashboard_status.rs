@@ -525,10 +525,47 @@ pub(super) fn collect_tau_ops_dashboard_command_center_snapshot(
     let snapshot = collect_gateway_dashboard_snapshot(gateway_state_dir);
     let alert_count = snapshot.alerts.len();
     let primary_alert = snapshot.alerts.first();
+    let rollout_gate = snapshot.health.rollout_gate.clone();
+    let control_mode = snapshot.control.mode.clone();
+    let control_paused = snapshot.control.paused;
+    let action_pause_allowed = snapshot
+        .control
+        .allowed_actions
+        .iter()
+        .any(|action| action.as_str().eq("pause"));
+    let action_resume_allowed = snapshot
+        .control
+        .allowed_actions
+        .iter()
+        .any(|action| action.as_str().eq("resume"));
+    let action_refresh_allowed = snapshot
+        .control
+        .allowed_actions
+        .iter()
+        .any(|action| action.as_str().eq("refresh"));
+    let last_action = snapshot.control.last_action.as_ref();
 
     TauOpsDashboardCommandCenterSnapshot {
         health_state: snapshot.health.health_state,
         health_reason: snapshot.health.health_reason,
+        rollout_gate,
+        control_mode,
+        control_paused,
+        action_pause_enabled: action_pause_allowed && !control_paused,
+        action_resume_enabled: action_resume_allowed && control_paused,
+        action_refresh_enabled: action_refresh_allowed,
+        last_action_request_id: last_action
+            .map(|action| action.request_id.clone())
+            .unwrap_or_else(|| "none".to_string()),
+        last_action_name: last_action
+            .map(|action| action.action.clone())
+            .unwrap_or_else(|| "none".to_string()),
+        last_action_actor: last_action
+            .map(|action| action.actor.clone())
+            .unwrap_or_else(|| "none".to_string()),
+        last_action_timestamp_unix_ms: last_action
+            .map(|action| action.timestamp_unix_ms)
+            .unwrap_or(0),
         queue_depth: snapshot.health.queue_depth,
         failure_streak: snapshot.health.failure_streak,
         processed_case_count: snapshot.health.processed_case_count,
@@ -1122,6 +1159,16 @@ invalid-json-line
             snapshot.health_reason,
             "no recent transport failures observed"
         );
+        assert_eq!(snapshot.rollout_gate, "pass");
+        assert_eq!(snapshot.control_mode, "running");
+        assert!(!snapshot.control_paused);
+        assert!(snapshot.action_pause_enabled);
+        assert!(!snapshot.action_resume_enabled);
+        assert!(snapshot.action_refresh_enabled);
+        assert_eq!(snapshot.last_action_request_id, "none");
+        assert_eq!(snapshot.last_action_name, "none");
+        assert_eq!(snapshot.last_action_actor, "none");
+        assert_eq!(snapshot.last_action_timestamp_unix_ms, 0);
         assert_eq!(snapshot.queue_depth, 0);
         assert_eq!(snapshot.failure_streak, 0);
         assert_eq!(snapshot.processed_case_count, 2);

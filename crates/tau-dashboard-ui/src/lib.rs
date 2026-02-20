@@ -198,6 +198,16 @@ impl TauOpsDashboardSidebarState {
 pub struct TauOpsDashboardCommandCenterSnapshot {
     pub health_state: String,
     pub health_reason: String,
+    pub rollout_gate: String,
+    pub control_mode: String,
+    pub control_paused: bool,
+    pub action_pause_enabled: bool,
+    pub action_resume_enabled: bool,
+    pub action_refresh_enabled: bool,
+    pub last_action_request_id: String,
+    pub last_action_name: String,
+    pub last_action_actor: String,
+    pub last_action_timestamp_unix_ms: u64,
     pub queue_depth: usize,
     pub failure_streak: usize,
     pub processed_case_count: usize,
@@ -215,6 +225,16 @@ impl Default for TauOpsDashboardCommandCenterSnapshot {
         Self {
             health_state: "unknown".to_string(),
             health_reason: "dashboard snapshot unavailable".to_string(),
+            rollout_gate: "hold".to_string(),
+            control_mode: "running".to_string(),
+            control_paused: false,
+            action_pause_enabled: true,
+            action_resume_enabled: false,
+            action_refresh_enabled: true,
+            last_action_request_id: "none".to_string(),
+            last_action_name: "none".to_string(),
+            last_action_actor: "none".to_string(),
+            last_action_timestamp_unix_ms: 0,
             queue_depth: 0,
             failure_streak: 0,
             processed_case_count: 0,
@@ -294,6 +314,35 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     };
     let health_state = context.command_center.health_state.clone();
     let health_reason = context.command_center.health_reason.clone();
+    let rollout_gate = context.command_center.rollout_gate.clone();
+    let control_mode = context.command_center.control_mode.clone();
+    let control_paused_value = if context.command_center.control_paused {
+        "true"
+    } else {
+        "false"
+    };
+    let action_pause_enabled_value = if context.command_center.action_pause_enabled {
+        "true"
+    } else {
+        "false"
+    };
+    let action_resume_enabled_value = if context.command_center.action_resume_enabled {
+        "true"
+    } else {
+        "false"
+    };
+    let action_refresh_enabled_value = if context.command_center.action_refresh_enabled {
+        "true"
+    } else {
+        "false"
+    };
+    let last_action_request_id = context.command_center.last_action_request_id.clone();
+    let last_action_name = context.command_center.last_action_name.clone();
+    let last_action_actor = context.command_center.last_action_actor.clone();
+    let last_action_timestamp_value = context
+        .command_center
+        .last_action_timestamp_unix_ms
+        .to_string();
     let queue_depth_value = context.command_center.queue_depth.to_string();
     let failure_streak_value = context.command_center.failure_streak.to_string();
     let processed_cases_value = context.command_center.processed_case_count.to_string();
@@ -453,6 +502,50 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                     <h2>Timeline Cycles</h2>
                                     <p>{context.command_center.timeline_cycle_count}</p>
                                 </article>
+                            </section>
+                            <section
+                                id="tau-ops-control-panel"
+                                data-component="ControlPanel"
+                                data-control-mode=control_mode
+                                data-rollout-gate=rollout_gate
+                                data-control-paused=control_paused_value
+                            >
+                                <h2>Control State</h2>
+                                <section id="tau-ops-control-actions" data-action-count="3">
+                                    <button
+                                        id="tau-ops-control-action-pause"
+                                        data-action-enabled=action_pause_enabled_value
+                                        data-action="pause"
+                                        type="button"
+                                    >
+                                        Pause
+                                    </button>
+                                    <button
+                                        id="tau-ops-control-action-resume"
+                                        data-action-enabled=action_resume_enabled_value
+                                        data-action="resume"
+                                        type="button"
+                                    >
+                                        Resume
+                                    </button>
+                                    <button
+                                        id="tau-ops-control-action-refresh"
+                                        data-action-enabled=action_refresh_enabled_value
+                                        data-action="refresh"
+                                        type="button"
+                                    >
+                                        Refresh
+                                    </button>
+                                </section>
+                                <section
+                                    id="tau-ops-control-last-action"
+                                    data-last-action-request-id=last_action_request_id
+                                    data-last-action-name=last_action_name
+                                    data-last-action-actor=last_action_actor
+                                    data-last-action-timestamp=last_action_timestamp_value
+                                >
+                                    <h3>Last Action</h3>
+                                </section>
                             </section>
                             <section
                                 id="tau-ops-alert-feed"
@@ -716,6 +809,16 @@ mod tests {
             command_center: TauOpsDashboardCommandCenterSnapshot {
                 health_state: "healthy".to_string(),
                 health_reason: "no recent transport failures observed".to_string(),
+                rollout_gate: "hold".to_string(),
+                control_mode: "paused".to_string(),
+                control_paused: true,
+                action_pause_enabled: false,
+                action_resume_enabled: true,
+                action_refresh_enabled: true,
+                last_action_request_id: "dashboard-action-90210".to_string(),
+                last_action_name: "pause".to_string(),
+                last_action_actor: "ops-user".to_string(),
+                last_action_timestamp_unix_ms: 90210,
                 queue_depth: 3,
                 failure_streak: 1,
                 processed_case_count: 8,
@@ -744,5 +847,61 @@ mod tests {
         assert!(html.contains("runtime backlog detected (queue_depth=3)"));
         assert!(html.contains("data-timeline-cycle-count=\"9\""));
         assert!(html.contains("data-timeline-invalid-cycle-count=\"1\""));
+        assert!(html.contains("data-control-mode=\"paused\""));
+        assert!(html.contains("data-rollout-gate=\"hold\""));
+        assert!(html.contains("data-control-paused=\"true\""));
+        assert!(html.contains("id=\"tau-ops-control-action-pause\" data-action-enabled=\"false\""));
+        assert!(html.contains("id=\"tau-ops-control-action-resume\" data-action-enabled=\"true\""));
+        assert!(html.contains("id=\"tau-ops-control-action-refresh\" data-action-enabled=\"true\""));
+        assert!(html.contains("data-last-action-request-id=\"dashboard-action-90210\""));
+        assert!(html.contains("data-last-action-name=\"pause\""));
+        assert!(html.contains("data-last-action-actor=\"ops-user\""));
+        assert!(html.contains("data-last-action-timestamp=\"90210\""));
+    }
+
+    #[test]
+    fn functional_spec_2810_c01_c02_c03_command_center_control_markers_render() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Ops,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot {
+                health_state: "healthy".to_string(),
+                health_reason: "operator pause action is active".to_string(),
+                rollout_gate: "hold".to_string(),
+                control_mode: "paused".to_string(),
+                control_paused: true,
+                action_pause_enabled: false,
+                action_resume_enabled: true,
+                action_refresh_enabled: true,
+                last_action_request_id: "dashboard-action-90210".to_string(),
+                last_action_name: "pause".to_string(),
+                last_action_actor: "ops-user".to_string(),
+                last_action_timestamp_unix_ms: 90210,
+                queue_depth: 1,
+                failure_streak: 0,
+                processed_case_count: 2,
+                alert_count: 2,
+                widget_count: 2,
+                timeline_cycle_count: 2,
+                timeline_invalid_cycle_count: 1,
+                primary_alert_code: "dashboard_queue_backlog".to_string(),
+                primary_alert_severity: "warning".to_string(),
+                primary_alert_message: "runtime backlog detected (queue_depth=1)".to_string(),
+            },
+        });
+
+        assert!(html.contains("id=\"tau-ops-control-panel\""));
+        assert!(html.contains("data-control-mode=\"paused\""));
+        assert!(html.contains("data-rollout-gate=\"hold\""));
+        assert!(html.contains("data-control-paused=\"true\""));
+        assert!(html.contains("id=\"tau-ops-control-action-pause\" data-action-enabled=\"false\""));
+        assert!(html.contains("id=\"tau-ops-control-action-resume\" data-action-enabled=\"true\""));
+        assert!(html.contains("id=\"tau-ops-control-action-refresh\" data-action-enabled=\"true\""));
+        assert!(html.contains("data-last-action-request-id=\"dashboard-action-90210\""));
+        assert!(html.contains("data-last-action-name=\"pause\""));
+        assert!(html.contains("data-last-action-actor=\"ops-user\""));
+        assert!(html.contains("data-last-action-timestamp=\"90210\""));
     }
 }
