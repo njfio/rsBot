@@ -25,6 +25,7 @@ members = [
   "crates/tau-github-issues",
   "crates/tau-github-issues-runtime",
   "crates/tau-dashboard",
+  "crates/tau-dashboard-ui",
   "crates/tau-custom-command",
   "crates/tau-browser-automation",
   "crates/tau-voice",
@@ -81,6 +82,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 jsonschema = "0.41"
 minijinja = "2.12"
+leptos = { version = "0.8", default-features = false, features = ["ssr"] }
 notify = "7.0"
 arc-swap = "1.7"
 toml = "0.8"

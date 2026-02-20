@@ -863,6 +863,42 @@ async fn functional_dashboard_shell_endpoint_returns_html_shell() {
 }
 
 #[tokio::test]
+async fn functional_ops_dashboard_shell_endpoint_returns_leptos_foundation_shell() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let response = client
+        .get(format!("http://{addr}{OPS_DASHBOARD_ENDPOINT}"))
+        .send()
+        .await
+        .expect("ops dashboard shell request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    assert!(content_type.contains("text/html"));
+    let body = response
+        .text()
+        .await
+        .expect("read ops dashboard shell body");
+    assert!(body.contains("Tau Ops Dashboard"));
+    assert!(body.contains("id=\"tau-ops-shell\""));
+    assert!(body.contains("id=\"tau-ops-header\""));
+    assert!(body.contains("id=\"tau-ops-sidebar\""));
+    assert!(body.contains("id=\"tau-ops-command-center\""));
+    assert!(body.contains("data-component=\"HealthBadge\""));
+    assert!(body.contains("data-component=\"StatCard\""));
+    assert!(body.contains("data-component=\"AlertFeed\""));
+    assert!(body.contains("data-component=\"DataTable\""));
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_webchat_endpoint_returns_html_shell() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 10_000, "secret");

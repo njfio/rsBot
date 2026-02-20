@@ -32,6 +32,7 @@ use tau_agent_core::{
 };
 use tau_ai::{LlmClient, Message, MessageRole, StreamDeltaHandler};
 use tau_core::{current_unix_timestamp, current_unix_timestamp_ms, write_text_atomic};
+use tau_dashboard_ui::render_tau_ops_dashboard_shell;
 use tau_memory::memory_contract::{MemoryEntry, MemoryScope};
 use tau_memory::runtime::{
     FileMemoryStore, MemoryRelationInput, MemoryScopeFilter, MemorySearchMatch,
@@ -136,6 +137,7 @@ const OPENRESPONSES_ENDPOINT: &str = "/v1/responses";
 const OPENAI_CHAT_COMPLETIONS_ENDPOINT: &str = "/v1/chat/completions";
 const OPENAI_COMPLETIONS_ENDPOINT: &str = "/v1/completions";
 const OPENAI_MODELS_ENDPOINT: &str = "/v1/models";
+const OPS_DASHBOARD_ENDPOINT: &str = "/ops";
 const DASHBOARD_SHELL_ENDPOINT: &str = "/dashboard";
 const WEBCHAT_ENDPOINT: &str = "/webchat";
 const GATEWAY_STATUS_ENDPOINT: &str = "/gateway/status";
@@ -920,6 +922,7 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
             EXTERNAL_CODING_AGENT_REAP_ENDPOINT,
             post(handle_external_coding_agent_reap),
         )
+        .route(OPS_DASHBOARD_ENDPOINT, get(handle_ops_dashboard_shell_page))
         .route(DASHBOARD_SHELL_ENDPOINT, get(handle_dashboard_shell_page))
         .route(WEBCHAT_ENDPOINT, get(handle_webchat_page))
         .route(GATEWAY_STATUS_ENDPOINT, get(handle_gateway_status))
@@ -938,6 +941,10 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
 
 async fn handle_webchat_page() -> Html<String> {
     Html(render_gateway_webchat_page())
+}
+
+async fn handle_ops_dashboard_shell_page() -> Html<String> {
+    Html(render_tau_ops_dashboard_shell())
 }
 
 async fn handle_dashboard_shell_page() -> Html<String> {
