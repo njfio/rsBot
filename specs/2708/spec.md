@@ -1,6 +1,6 @@
 # Spec: Issue #2708 - Cortex observer coverage for memory-save and worker-progress signals
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 `/cortex/status` currently tracks a narrow set of gateway events (chat/session append/reset and external coding session open/close). Remaining G3 tracking goals in `tasks/spacebot-comparison.md` require broader runtime visibility, especially around memory-save operations and worker/session progress signals.

@@ -1,12 +1,12 @@
 # Tasks: Issue #2708 - Cortex observer coverage for memory-save and worker-progress signals
 
 ## Ordered Tasks
-1. [ ] T1 (RED): add failing integration/regression tests for C-01..C-05.
-2. [ ] T2 (GREEN): add Cortex runtime helper wrappers for new event types.
-3. [ ] T3 (GREEN): instrument memory write/update/delete handlers.
-4. [ ] T4 (GREEN): instrument external coding progress/followup handlers.
-5. [ ] T5 (REGRESSION): verify auth + missing-artifact fallback contracts remain intact.
-6. [ ] T6 (VERIFY): run scoped fmt/clippy/targeted tests and capture C-06 evidence.
+1. [x] T1 (RED): add failing integration/regression tests for C-01..C-05.
+2. [x] T2 (GREEN): add Cortex runtime helper wrappers for new event types.
+3. [x] T3 (GREEN): instrument memory write/update/delete handlers.
+4. [x] T4 (GREEN): instrument external coding progress/followup handlers.
+5. [x] T5 (REGRESSION): verify auth + missing-artifact fallback contracts remain intact.
+6. [x] T6 (VERIFY): run scoped fmt/clippy/targeted tests and capture C-06 evidence.
 
 ## Tier Mapping
 - Unit: helper wrapper behavior and status loader expectations.
