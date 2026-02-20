@@ -446,10 +446,20 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     } else {
         "true"
     };
+    let chat_panel_visible = if matches!(context.active_route, TauOpsDashboardRoute::Chat) {
+        "true"
+    } else {
+        "false"
+    };
     let sessions_panel_hidden = if matches!(context.active_route, TauOpsDashboardRoute::Sessions) {
         "false"
     } else {
         "true"
+    };
+    let sessions_panel_visible = if matches!(context.active_route, TauOpsDashboardRoute::Sessions) {
+        "true"
+    } else {
+        "false"
     };
     let command_center_panel_hidden = if matches!(context.active_route, TauOpsDashboardRoute::Ops) {
         "false"
@@ -855,6 +865,7 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                             data-route="/ops/chat"
                             aria-hidden=chat_panel_hidden
                             data-active-session-key=chat_session_key.clone()
+                            data-panel-visible=chat_panel_visible
                         >
                             <h2>Conversation / Chat</h2>
                             <section
@@ -942,6 +953,7 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                             id="tau-ops-sessions-panel"
                             data-route="/ops/sessions"
                             aria-hidden=sessions_panel_hidden
+                            data-panel-visible=sessions_panel_visible
                         >
                             <h2>Sessions Explorer</h2>
                             <ul id="tau-ops-sessions-list" data-session-count=sessions_row_count_value>
@@ -2026,6 +2038,63 @@ mod tests {
             });
         assert!(sessions_html
             .contains("id=\"tau-ops-command-center\" data-route=\"/ops\" aria-hidden=\"true\""));
+    }
+
+    #[test]
+    fn functional_spec_2858_c01_c03_chat_route_panel_visibility_state_contracts() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Chat,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot::default(),
+        });
+
+        assert!(html.contains(
+            "id=\"tau-ops-chat-panel\" data-route=\"/ops/chat\" aria-hidden=\"false\" data-active-session-key=\"default\" data-panel-visible=\"true\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-sessions-panel\" data-route=\"/ops/sessions\" aria-hidden=\"true\" data-panel-visible=\"false\""
+        ));
+    }
+
+    #[test]
+    fn functional_spec_2858_c02_c04_sessions_route_panel_visibility_state_contracts() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Sessions,
+            theme: TauOpsDashboardTheme::Light,
+            sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot::default(),
+        });
+
+        assert!(html.contains(
+            "id=\"tau-ops-chat-panel\" data-route=\"/ops/chat\" aria-hidden=\"true\" data-active-session-key=\"default\" data-panel-visible=\"false\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-sessions-panel\" data-route=\"/ops/sessions\" aria-hidden=\"false\" data-panel-visible=\"true\""
+        ));
+    }
+
+    #[test]
+    fn regression_spec_2858_c05_ops_route_panels_remain_hidden_with_visibility_state_markers() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Ops,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot::default(),
+        });
+
+        assert!(html.contains(
+            "id=\"tau-ops-chat-panel\" data-route=\"/ops/chat\" aria-hidden=\"true\" data-active-session-key=\"default\" data-panel-visible=\"false\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-sessions-panel\" data-route=\"/ops/sessions\" aria-hidden=\"true\" data-panel-visible=\"false\""
+        ));
     }
 
     #[test]
