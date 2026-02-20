@@ -396,6 +396,11 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     } else {
         "true"
     };
+    let sessions_panel_hidden = if matches!(context.active_route, TauOpsDashboardRoute::Sessions) {
+        "false"
+    } else {
+        "true"
+    };
     let chat_message_rows = if context.chat.message_rows.is_empty() {
         vec![TauOpsDashboardChatMessageRow {
             role: "system".to_string(),
@@ -404,8 +409,10 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     } else {
         context.chat.message_rows.clone()
     };
+    let sessions_row_options = context.chat.session_options.clone();
+    let sessions_row_count_value = sessions_row_options.len().to_string();
     let chat_session_key = context.chat.active_session_key.clone();
-    let mut chat_session_options = context.chat.session_options.clone();
+    let mut chat_session_options = sessions_row_options.clone();
     let mut active_session_marked = false;
     for option in &mut chat_session_options {
         if option.session_key == chat_session_key {
@@ -419,6 +426,46 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
             selected: true,
         });
     }
+    let sessions_rows_view = if sessions_row_options.is_empty() {
+        leptos::either::Either::Left(view! {
+            <li id="tau-ops-sessions-empty-state" data-empty-state="true">
+                No sessions discovered yet.
+            </li>
+        })
+    } else {
+        leptos::either::Either::Right(
+            sessions_row_options
+                .iter()
+                .enumerate()
+                .map(|(index, session_option)| {
+                    let row_id = format!("tau-ops-sessions-row-{index}");
+                    let selected_attr = if session_option.selected {
+                        "true"
+                    } else {
+                        "false"
+                    };
+                    let open_chat_href = format!(
+                        "/ops/chat?theme={theme_attr}&sidebar={sidebar_state_attr}&session={}",
+                        session_option.session_key
+                    );
+                    view! {
+                        <li
+                            id=row_id
+                            data-session-key=session_option.session_key.clone()
+                            data-selected=selected_attr
+                        >
+                            <a
+                                data-open-chat-session=session_option.session_key.clone()
+                                href=open_chat_href
+                            >
+                                {session_option.session_key.clone()}
+                            </a>
+                        </li>
+                    }
+                })
+                .collect_view(),
+        )
+    };
     let chat_session_option_count_value = chat_session_options.len().to_string();
     let chat_message_count_value = chat_message_rows.len().to_string();
     let chat_send_form_action = context.chat.send_form_action.clone();
@@ -716,6 +763,16 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                         }
                                     })
                                     .collect_view()}
+                            </ul>
+                        </section>
+                        <section
+                            id="tau-ops-sessions-panel"
+                            data-route="/ops/sessions"
+                            aria-hidden=sessions_panel_hidden
+                        >
+                            <h2>Sessions Explorer</h2>
+                            <ul id="tau-ops-sessions-list" data-session-count=sessions_row_count_value>
+                                {sessions_rows_view}
                             </ul>
                         </section>
                         <section id="tau-ops-command-center" aria-live="polite">
@@ -1338,6 +1395,77 @@ mod tests {
         assert!(html.contains(
             "id=\"tau-ops-chat-session-option-1\" data-session-key=\"session-zeta\" data-selected=\"true\""
         ));
+    }
+
+    #[test]
+    fn functional_spec_2838_c01_c02_c03_sessions_route_renders_sessions_panel_list_rows_and_links()
+    {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Sessions,
+            theme: TauOpsDashboardTheme::Light,
+            sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot {
+                active_session_key: "session-beta".to_string(),
+                send_form_action: "/ops/chat/send".to_string(),
+                send_form_method: "post".to_string(),
+                session_options: vec![
+                    TauOpsDashboardChatSessionOptionRow {
+                        session_key: "session-alpha".to_string(),
+                        selected: false,
+                    },
+                    TauOpsDashboardChatSessionOptionRow {
+                        session_key: "session-beta".to_string(),
+                        selected: true,
+                    },
+                ],
+                message_rows: vec![],
+            },
+        });
+
+        assert!(html.contains(
+            "id=\"tau-ops-sessions-panel\" data-route=\"/ops/sessions\" aria-hidden=\"false\""
+        ));
+        assert!(html.contains("id=\"tau-ops-sessions-list\" data-session-count=\"2\""));
+        assert!(html.contains(
+            "id=\"tau-ops-sessions-row-0\" data-session-key=\"session-alpha\" data-selected=\"false\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-sessions-row-1\" data-session-key=\"session-beta\" data-selected=\"true\""
+        ));
+        assert!(html.contains(
+            "href=\"/ops/chat?theme=light&amp;sidebar=collapsed&amp;session=session-alpha\""
+        ));
+        assert!(html.contains(
+            "href=\"/ops/chat?theme=light&amp;sidebar=collapsed&amp;session=session-beta\""
+        ));
+    }
+
+    #[test]
+    fn functional_spec_2838_c04_sessions_route_renders_empty_state_marker_when_no_sessions_discovered(
+    ) {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Sessions,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot {
+                active_session_key: "default".to_string(),
+                send_form_action: "/ops/chat/send".to_string(),
+                send_form_method: "post".to_string(),
+                session_options: vec![],
+                message_rows: vec![],
+            },
+        });
+
+        assert!(html.contains(
+            "id=\"tau-ops-sessions-panel\" data-route=\"/ops/sessions\" aria-hidden=\"false\""
+        ));
+        assert!(html.contains("id=\"tau-ops-sessions-list\" data-session-count=\"0\""));
+        assert!(html.contains("id=\"tau-ops-sessions-empty-state\" data-empty-state=\"true\""));
+        assert!(html.contains("No sessions discovered yet."));
     }
 
     #[test]
