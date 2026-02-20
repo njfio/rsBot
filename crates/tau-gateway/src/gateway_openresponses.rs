@@ -1040,6 +1040,7 @@ fn render_tau_ops_dashboard_shell_for_route(
         TauOpsDashboardShellContext {
             auth_mode: resolve_tau_ops_dashboard_auth_mode(state.config.auth_mode),
             active_route: route,
+            ..TauOpsDashboardShellContext::default()
         },
     ))
 }
