@@ -1401,6 +1401,88 @@ async fn integration_spec_2834_c02_c03_ops_chat_selector_syncs_discovered_sessio
 }
 
 #[tokio::test]
+async fn functional_spec_2838_c01_c04_ops_sessions_shell_exposes_panel_and_empty_state_markers() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/sessions?theme=light&sidebar=collapsed"
+        ))
+        .send()
+        .await
+        .expect("ops sessions request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops sessions body");
+
+    assert!(body.contains("data-active-route=\"sessions\""));
+    assert!(body.contains(
+        "id=\"tau-ops-sessions-panel\" data-route=\"/ops/sessions\" aria-hidden=\"false\""
+    ));
+    assert!(body.contains("id=\"tau-ops-sessions-list\" data-session-count=\"0\""));
+    assert!(body.contains("id=\"tau-ops-sessions-empty-state\" data-empty-state=\"true\""));
+    assert!(body.contains("No sessions discovered yet."));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_spec_2838_c02_c03_ops_sessions_shell_renders_discovered_rows_and_chat_links() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    for (session_key, message) in [
+        ("session-alpha", "alpha sessions row"),
+        ("session-beta", "beta sessions row"),
+    ] {
+        let send_response = client
+            .post(format!("http://{addr}/ops/chat/send"))
+            .form(&[
+                ("session_key", session_key),
+                ("message", message),
+                ("theme", "light"),
+                ("sidebar", "collapsed"),
+            ])
+            .send()
+            .await
+            .expect("ops chat send request");
+        assert_eq!(send_response.status(), StatusCode::SEE_OTHER);
+    }
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/sessions?theme=light&sidebar=collapsed&session=session-beta"
+        ))
+        .send()
+        .await
+        .expect("ops sessions render request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops sessions body");
+
+    assert!(body.contains("id=\"tau-ops-sessions-list\" data-session-count=\"2\""));
+    assert!(body.contains(
+        "id=\"tau-ops-sessions-row-0\" data-session-key=\"session-alpha\" data-selected=\"false\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-sessions-row-1\" data-session-key=\"session-beta\" data-selected=\"true\""
+    ));
+    assert!(body.contains(
+        "href=\"/ops/chat?theme=light&amp;sidebar=collapsed&amp;session=session-alpha\""
+    ));
+    assert!(body
+        .contains("href=\"/ops/chat?theme=light&amp;sidebar=collapsed&amp;session=session-beta\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2806_c01_c02_c03_ops_shell_command_center_markers_reflect_dashboard_snapshot(
 ) {
     let temp = tempdir().expect("tempdir");

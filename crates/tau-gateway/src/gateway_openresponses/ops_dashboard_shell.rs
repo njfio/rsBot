@@ -81,7 +81,6 @@ fn collect_ops_chat_session_option_rows(
     active_session_key: &str,
 ) -> Vec<TauOpsDashboardChatSessionOptionRow> {
     let mut session_keys = BTreeSet::new();
-    session_keys.insert(sanitize_session_key(active_session_key));
 
     let sessions_root = state
         .config
