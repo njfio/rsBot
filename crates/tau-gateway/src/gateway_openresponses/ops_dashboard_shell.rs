@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use axum::extract::{Form, State};
+use axum::extract::{Form, Path as AxumPath, State};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use serde::Deserialize;
 use tau_ai::{Message, MessageRole};
@@ -16,9 +16,10 @@ use tau_session::SessionStore;
 
 use super::{
     collect_tau_ops_dashboard_command_center_snapshot, gateway_session_path,
-    record_cortex_session_append_event, sanitize_session_key, GatewayOpenResponsesServerState,
-    OpenResponsesApiError, OpsShellControlsQuery, DEFAULT_SESSION_KEY, OPS_DASHBOARD_CHAT_ENDPOINT,
-    OPS_DASHBOARD_CHAT_NEW_ENDPOINT, OPS_DASHBOARD_CHAT_SEND_ENDPOINT,
+    record_cortex_session_append_event, record_cortex_session_reset_event, sanitize_session_key,
+    GatewayOpenResponsesServerState, OpenResponsesApiError, OpsShellControlsQuery,
+    DEFAULT_SESSION_KEY, OPS_DASHBOARD_CHAT_ENDPOINT, OPS_DASHBOARD_CHAT_NEW_ENDPOINT,
+    OPS_DASHBOARD_CHAT_SEND_ENDPOINT,
 };
 use crate::remote_profile::GatewayOpenResponsesAuthMode;
 
@@ -166,6 +167,42 @@ impl OpsDashboardSessionBranchForm {
     }
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct OpsDashboardSessionResetForm {
+    #[serde(default)]
+    session_key: String,
+    #[serde(default)]
+    confirm_reset: String,
+    #[serde(default)]
+    theme: String,
+    #[serde(default)]
+    sidebar: String,
+}
+
+impl OpsDashboardSessionResetForm {
+    fn resolved_session_key(&self, route_session_key: &str) -> String {
+        let requested = self.session_key.trim();
+        let resolved = if requested.is_empty() {
+            route_session_key
+        } else {
+            requested
+        };
+        sanitize_session_key(resolved)
+    }
+
+    fn is_confirmed(&self) -> bool {
+        self.confirm_reset.trim() == "true"
+    }
+
+    fn resolved_theme(&self) -> TauOpsDashboardTheme {
+        resolve_chat_theme(self.theme.as_str())
+    }
+
+    fn resolved_sidebar_state(&self) -> TauOpsDashboardSidebarState {
+        resolve_chat_sidebar_state(self.sidebar.as_str())
+    }
+}
+
 fn resolve_ops_chat_session_key(
     controls: &OpsShellControlsQuery,
     detail_session_key: Option<&str>,
@@ -228,6 +265,18 @@ fn build_ops_chat_redirect_path(
 ) -> String {
     format!(
         "{OPS_DASHBOARD_CHAT_ENDPOINT}?theme={}&sidebar={}&session={session_key}",
+        theme.as_str(),
+        sidebar_state.as_str()
+    )
+}
+
+fn build_ops_session_detail_redirect_path(
+    theme: TauOpsDashboardTheme,
+    sidebar_state: TauOpsDashboardSidebarState,
+    session_key: &str,
+) -> String {
+    format!(
+        "/ops/sessions/{session_key}?theme={}&sidebar={}",
         theme.as_str(),
         sidebar_state.as_str()
     )
@@ -531,5 +580,46 @@ pub(super) async fn handle_ops_dashboard_sessions_branch(
         redirect_sidebar_state,
         target_session_key.as_str(),
     );
+    Redirect::to(redirect_path.as_str()).into_response()
+}
+
+pub(super) async fn handle_ops_dashboard_session_detail_reset(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    AxumPath(route_session_key): AxumPath<String>,
+    Form(form): Form<OpsDashboardSessionResetForm>,
+) -> Response {
+    let route_session_key = sanitize_session_key(route_session_key.as_str());
+    let session_key = form.resolved_session_key(route_session_key.as_str());
+    let redirect_path = build_ops_session_detail_redirect_path(
+        form.resolved_theme(),
+        form.resolved_sidebar_state(),
+        session_key.as_str(),
+    );
+
+    if !form.is_confirmed() {
+        state.record_ui_telemetry_event("sessions", "reset", "session_reset_confirmation_missing");
+        return Redirect::to(redirect_path.as_str()).into_response();
+    }
+
+    let session_path = gateway_session_path(&state.config.state_dir, session_key.as_str());
+    let lock_path = session_path.with_extension("lock");
+    let mut reset = false;
+
+    if session_path.exists() {
+        if let Err(error) = std::fs::remove_file(&session_path) {
+            return OpenResponsesApiError::internal(format!(
+                "failed to remove session '{}': {error}",
+                session_path.display()
+            ))
+            .into_response();
+        }
+        reset = true;
+    }
+    if lock_path.exists() {
+        let _ = std::fs::remove_file(&lock_path);
+    }
+
+    state.record_ui_telemetry_event("sessions", "reset", "session_reset_applied");
+    record_cortex_session_reset_event(&state.config.state_dir, session_key.as_str(), reset);
     Redirect::to(redirect_path.as_str()).into_response()
 }

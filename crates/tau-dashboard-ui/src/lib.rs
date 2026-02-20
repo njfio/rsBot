@@ -576,6 +576,7 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
         };
     let session_detail_route = context.chat.session_detail_route.clone();
     let session_graph_route = session_detail_route.clone();
+    let session_reset_form_action = session_detail_route.clone();
     let session_detail_validation_entries =
         context.chat.session_detail_validation_entries.to_string();
     let session_detail_validation_duplicates = context
@@ -1176,6 +1177,40 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                             aria-hidden=session_detail_panel_hidden
                         >
                             <h2>Session Detail</h2>
+                            <form
+                                id="tau-ops-session-reset-form"
+                                action=session_reset_form_action
+                                method="post"
+                                data-session-key=chat_session_key.clone()
+                                data-confirmation-required="true"
+                            >
+                                <input
+                                    id="tau-ops-session-reset-session-key"
+                                    type="hidden"
+                                    name="session_key"
+                                    value=chat_session_key.clone()
+                                />
+                                <input id="tau-ops-session-reset-theme" type="hidden" name="theme" value=theme_attr />
+                                <input
+                                    id="tau-ops-session-reset-sidebar"
+                                    type="hidden"
+                                    name="sidebar"
+                                    value=sidebar_state_attr
+                                />
+                                <input
+                                    id="tau-ops-session-reset-confirm"
+                                    type="hidden"
+                                    name="confirm_reset"
+                                    value="true"
+                                />
+                                <button
+                                    id="tau-ops-session-reset-submit"
+                                    type="submit"
+                                    data-confirmation-required="true"
+                                >
+                                    Reset Session
+                                </button>
+                            </form>
                             <article
                                 id="tau-ops-session-validation-report"
                                 data-entries=session_detail_validation_entries
@@ -2502,6 +2537,47 @@ mod tests {
         ));
         assert!(html.contains(
             "id=\"tau-ops-session-branch-submit-0\" type=\"submit\" data-confirmation-required=\"true\""
+        ));
+    }
+
+    #[test]
+    fn functional_spec_2889_c01_sessions_route_renders_reset_confirmation_form_contracts() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Sessions,
+            theme: TauOpsDashboardTheme::Light,
+            sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot {
+                active_session_key: "session-reset-target".to_string(),
+                session_detail_visible: true,
+                session_detail_route: "/ops/sessions/session-reset-target".to_string(),
+                session_detail_timeline_rows: vec![TauOpsDashboardSessionTimelineRow {
+                    entry_id: 3,
+                    role: "assistant".to_string(),
+                    content: "reset candidate row".to_string(),
+                }],
+                ..TauOpsDashboardChatSnapshot::default()
+            },
+        });
+
+        assert!(html.contains(
+            "id=\"tau-ops-session-reset-form\" action=\"/ops/sessions/session-reset-target\" method=\"post\" data-session-key=\"session-reset-target\" data-confirmation-required=\"true\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-session-reset-session-key\" type=\"hidden\" name=\"session_key\" value=\"session-reset-target\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-session-reset-theme\" type=\"hidden\" name=\"theme\" value=\"light\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-session-reset-sidebar\" type=\"hidden\" name=\"sidebar\" value=\"collapsed\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-session-reset-confirm\" type=\"hidden\" name=\"confirm_reset\" value=\"true\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-session-reset-submit\" type=\"submit\" data-confirmation-required=\"true\""
         ));
     }
 

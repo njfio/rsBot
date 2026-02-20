@@ -2351,6 +2351,217 @@ async fn integration_spec_2885_c02_c03_c04_ops_sessions_branch_creates_lineage_d
 }
 
 #[tokio::test]
+async fn functional_spec_2889_c01_ops_session_detail_shell_exposes_reset_confirmation_markers() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    let send_response = client
+        .post(format!("http://{addr}/ops/chat/send"))
+        .form(&[
+            ("session_key", "session-reset-target"),
+            ("message", "reset target message"),
+            ("theme", "light"),
+            ("sidebar", "collapsed"),
+        ])
+        .send()
+        .await
+        .expect("ops chat send request");
+    assert_eq!(send_response.status(), StatusCode::SEE_OTHER);
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/sessions/session-reset-target?theme=light&sidebar=collapsed"
+        ))
+        .send()
+        .await
+        .expect("ops session detail request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops session detail body");
+
+    assert!(body.contains(
+        "id=\"tau-ops-session-reset-form\" action=\"/ops/sessions/session-reset-target\" method=\"post\" data-session-key=\"session-reset-target\" data-confirmation-required=\"true\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-session-reset-session-key\" type=\"hidden\" name=\"session_key\" value=\"session-reset-target\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-session-reset-theme\" type=\"hidden\" name=\"theme\" value=\"light\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-session-reset-sidebar\" type=\"hidden\" name=\"sidebar\" value=\"collapsed\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-session-reset-confirm\" type=\"hidden\" name=\"confirm_reset\" value=\"true\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-session-reset-submit\" type=\"submit\" data-confirmation-required=\"true\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_spec_2889_c02_c03_c04_ops_session_detail_post_reset_clears_target_and_preserves_other_sessions(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state.clone())
+        .await
+        .expect("spawn server");
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    let target_send = client
+        .post(format!("http://{addr}/ops/chat/send"))
+        .form(&[
+            ("session_key", "session-reset-target"),
+            ("message", "target message one"),
+            ("theme", "light"),
+            ("sidebar", "collapsed"),
+        ])
+        .send()
+        .await
+        .expect("ops target send request");
+    assert_eq!(target_send.status(), StatusCode::SEE_OTHER);
+
+    let control_send = client
+        .post(format!("http://{addr}/ops/chat/send"))
+        .form(&[
+            ("session_key", "session-reset-control"),
+            ("message", "control message persists"),
+            ("theme", "light"),
+            ("sidebar", "collapsed"),
+        ])
+        .send()
+        .await
+        .expect("ops control send request");
+    assert_eq!(control_send.status(), StatusCode::SEE_OTHER);
+
+    let reset_response = client
+        .post(format!("http://{addr}/ops/sessions/session-reset-target"))
+        .form(&[
+            ("session_key", "session-reset-target"),
+            ("theme", "light"),
+            ("sidebar", "collapsed"),
+            ("confirm_reset", "true"),
+        ])
+        .send()
+        .await
+        .expect("ops reset request");
+    assert_eq!(reset_response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        reset_response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("/ops/sessions/session-reset-target?theme=light&sidebar=collapsed")
+    );
+
+    let target_path = gateway_session_path(&state.config.state_dir, "session-reset-target");
+    assert!(!target_path.exists());
+
+    let control_path = gateway_session_path(&state.config.state_dir, "session-reset-control");
+    let control_store = SessionStore::load(&control_path).expect("load control session store");
+    let control_lineage = control_store
+        .lineage_messages(control_store.head_id())
+        .expect("control lineage");
+    assert!(control_lineage
+        .iter()
+        .any(|message| message.text_content() == "control message persists"));
+
+    let detail_response = client
+        .get(format!(
+            "http://{addr}/ops/sessions/session-reset-target?theme=light&sidebar=collapsed"
+        ))
+        .send()
+        .await
+        .expect("ops detail render request");
+    assert_eq!(detail_response.status(), StatusCode::OK);
+    let detail_body = detail_response.text().await.expect("read ops detail body");
+    assert!(detail_body.contains(
+        "id=\"tau-ops-session-detail-panel\" data-route=\"/ops/sessions/session-reset-target\" data-session-key=\"session-reset-target\" aria-hidden=\"false\""
+    ));
+    assert!(detail_body.contains(
+        "id=\"tau-ops-session-validation-report\" data-entries=\"0\" data-duplicates=\"0\" data-invalid-parent=\"0\" data-cycles=\"0\" data-is-valid=\"true\""
+    ));
+    assert!(detail_body.contains("id=\"tau-ops-session-message-timeline\" data-entry-count=\"0\""));
+    assert!(detail_body
+        .contains("id=\"tau-ops-session-message-empty-state\" data-empty-state=\"true\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2889_ops_session_reset_requires_confirmation_flag() {
+    // Regression: #2889
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state.clone())
+        .await
+        .expect("spawn server");
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    let send_response = client
+        .post(format!("http://{addr}/ops/chat/send"))
+        .form(&[
+            ("session_key", "session-reset-requires-confirm"),
+            ("message", "reset should not apply without confirmation"),
+            ("theme", "light"),
+            ("sidebar", "collapsed"),
+        ])
+        .send()
+        .await
+        .expect("ops chat send request");
+    assert_eq!(send_response.status(), StatusCode::SEE_OTHER);
+
+    let reset_response = client
+        .post(format!(
+            "http://{addr}/ops/sessions/session-reset-requires-confirm"
+        ))
+        .form(&[
+            ("session_key", "session-reset-requires-confirm"),
+            ("theme", "light"),
+            ("sidebar", "collapsed"),
+            ("confirm_reset", "false"),
+        ])
+        .send()
+        .await
+        .expect("ops reset request without confirmation");
+    assert_eq!(reset_response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        reset_response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|value| value.to_str().ok()),
+        Some("/ops/sessions/session-reset-requires-confirm?theme=light&sidebar=collapsed")
+    );
+
+    let target_path =
+        gateway_session_path(&state.config.state_dir, "session-reset-requires-confirm");
+    assert!(target_path.exists());
+
+    let target_store = SessionStore::load(&target_path).expect("load target session store");
+    let target_lineage = target_store
+        .lineage_messages(target_store.head_id())
+        .expect("target lineage");
+    assert!(target_lineage.iter().any(|message| {
+        message.text_content() == "reset should not apply without confirmation"
+    }));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2806_c01_c02_c03_ops_shell_command_center_markers_reflect_dashboard_snapshot(
 ) {
     let temp = tempdir().expect("tempdir");
