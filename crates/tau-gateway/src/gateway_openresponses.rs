@@ -60,6 +60,7 @@ mod audit_runtime;
 mod auth_runtime;
 mod cortex_bulletin_runtime;
 mod cortex_runtime;
+mod dashboard_shell_page;
 mod dashboard_status;
 mod deploy_runtime;
 mod jobs_runtime;
@@ -89,6 +90,7 @@ use cortex_runtime::{
     record_cortex_memory_entry_write_event, record_cortex_memory_write_event,
     record_cortex_session_append_event, record_cortex_session_reset_event,
 };
+use dashboard_shell_page::render_gateway_dashboard_shell_page;
 use dashboard_status::{
     apply_gateway_dashboard_action, collect_gateway_dashboard_snapshot,
     GatewayDashboardActionRequest,
@@ -134,6 +136,7 @@ const OPENRESPONSES_ENDPOINT: &str = "/v1/responses";
 const OPENAI_CHAT_COMPLETIONS_ENDPOINT: &str = "/v1/chat/completions";
 const OPENAI_COMPLETIONS_ENDPOINT: &str = "/v1/completions";
 const OPENAI_MODELS_ENDPOINT: &str = "/v1/models";
+const DASHBOARD_SHELL_ENDPOINT: &str = "/dashboard";
 const WEBCHAT_ENDPOINT: &str = "/webchat";
 const GATEWAY_STATUS_ENDPOINT: &str = "/gateway/status";
 const GATEWAY_WS_ENDPOINT: &str = "/gateway/ws";
@@ -917,6 +920,7 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
             EXTERNAL_CODING_AGENT_REAP_ENDPOINT,
             post(handle_external_coding_agent_reap),
         )
+        .route(DASHBOARD_SHELL_ENDPOINT, get(handle_dashboard_shell_page))
         .route(WEBCHAT_ENDPOINT, get(handle_webchat_page))
         .route(GATEWAY_STATUS_ENDPOINT, get(handle_gateway_status))
         .route(DASHBOARD_HEALTH_ENDPOINT, get(handle_dashboard_health))
@@ -934,6 +938,10 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
 
 async fn handle_webchat_page() -> Html<String> {
     Html(render_gateway_webchat_page())
+}
+
+async fn handle_dashboard_shell_page() -> Html<String> {
+    Html(render_gateway_dashboard_shell_page())
 }
 
 async fn handle_gateway_status(
@@ -1014,6 +1022,7 @@ async fn handle_gateway_status(
                     },
                     "telemetry_runtime": state.collect_ui_telemetry_status_report(),
                 },
+                "dashboard_shell_endpoint": DASHBOARD_SHELL_ENDPOINT,
                 "webchat_endpoint": WEBCHAT_ENDPOINT,
                 "auth_session_endpoint": GATEWAY_AUTH_SESSION_ENDPOINT,
                 "status_endpoint": GATEWAY_STATUS_ENDPOINT,

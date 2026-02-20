@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tau Ops Dashboard</title>
+    <style>
+      :root {
+        --bg: #0f172a;
+        --panel: #111827;
+        --muted: #94a3b8;
+        --ink: #e2e8f0;
+        --accent: #38bdf8;
+        --line: #1f2937;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: radial-gradient(circle at top, #1e293b, var(--bg));
+        color: var(--ink);
+        font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      }
+      .layout {
+        max-width: 1080px;
+        margin: 0 auto;
+        padding: 1rem;
+      }
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: color-mix(in srgb, var(--panel) 92%, black);
+        padding: 1rem;
+      }
+      h1 {
+        margin: 0;
+        font-size: 1.25rem;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .tabs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin: 1rem 0;
+      }
+      .tab {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #0b1220;
+        color: var(--ink);
+        padding: 0.45rem 0.65rem;
+        cursor: pointer;
+      }
+      .tab.active {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      .view {
+        display: none;
+      }
+      .view.active {
+        display: block;
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main id="dashboard-shell-root" class="layout">
+      <section class="panel">
+        <h1>Tau Ops Dashboard</h1>
+        <p class="muted">
+          Embedded gateway shell for dashboard SPA hosting evolution.
+          <a href="/webchat">Open webchat</a>.
+        </p>
+        <div class="tabs" role="tablist" aria-label="Dashboard shell views">
+          <button class="tab active" data-view="overview" role="tab" aria-selected="true">Overview</button>
+          <button class="tab" data-view="sessions" role="tab" aria-selected="false">Sessions</button>
+          <button class="tab" data-view="memory" role="tab" aria-selected="false">Memory</button>
+          <button class="tab" data-view="configuration" role="tab" aria-selected="false">Configuration</button>
+        </div>
+        <section id="dashboard-shell-view-overview" class="view active" role="tabpanel" aria-hidden="false">
+          <h2>Overview</h2>
+          <p class="muted">Overview widgets and rollout posture surface is reserved here.</p>
+        </section>
+        <section id="dashboard-shell-view-sessions" class="view" role="tabpanel" aria-hidden="true">
+          <h2>Sessions</h2>
+          <p class="muted">Session inspector shell placeholder.</p>
+        </section>
+        <section id="dashboard-shell-view-memory" class="view" role="tabpanel" aria-hidden="true">
+          <h2>Memory</h2>
+          <p class="muted">Memory browser shell placeholder.</p>
+        </section>
+        <section id="dashboard-shell-view-configuration" class="view" role="tabpanel" aria-hidden="true">
+          <h2>Configuration</h2>
+          <p class="muted">Configuration editor shell placeholder.</p>
+        </section>
+      </section>
+    </main>
+    <script>
+      const tabs = Array.from(document.querySelectorAll(".tab"));
+      const views = Array.from(document.querySelectorAll(".view"));
+
+      function activateView(viewName) {
+        tabs.forEach((tab) => {
+          const active = tab.dataset.view === viewName;
+          tab.classList.toggle("active", active);
+          tab.setAttribute("aria-selected", active ? "true" : "false");
+        });
+        views.forEach((view) => {
+          const active = view.id === "dashboard-shell-view-" + viewName;
+          view.classList.toggle("active", active);
+          view.setAttribute("aria-hidden", active ? "false" : "true");
+        });
+      }
+
+      tabs.forEach((tab) => {
+        tab.addEventListener("click", () => {
+          activateView(tab.dataset.view || "overview");
+        });
+      });
+    </script>
+  </body>
+</html>

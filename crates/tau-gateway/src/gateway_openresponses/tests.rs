@@ -691,6 +691,20 @@ fn unit_collect_gateway_multi_channel_status_report_composes_runtime_and_connect
 }
 
 #[test]
+fn unit_spec_2738_c01_dashboard_shell_page_contains_navigation_markers() {
+    let html = render_gateway_dashboard_shell_page();
+    assert!(html.contains("Tau Ops Dashboard"));
+    assert!(html.contains("data-view=\"overview\""));
+    assert!(html.contains("data-view=\"sessions\""));
+    assert!(html.contains("data-view=\"memory\""));
+    assert!(html.contains("data-view=\"configuration\""));
+    assert!(html.contains("id=\"dashboard-shell-view-overview\""));
+    assert!(html.contains("id=\"dashboard-shell-view-sessions\""));
+    assert!(html.contains("id=\"dashboard-shell-view-memory\""));
+    assert!(html.contains("id=\"dashboard-shell-view-configuration\""));
+}
+
+#[test]
 fn unit_render_gateway_webchat_page_includes_expected_endpoints() {
     let html = render_gateway_webchat_page();
     assert!(html.contains("Tau Gateway Webchat"));
@@ -786,6 +800,35 @@ fn unit_spec_2734_c01_c02_c03_webchat_page_includes_routines_panel_and_job_handl
     assert!(html.contains("async function cancelRoutineJob(jobId)"));
     assert!(html.contains("routines status failed:"));
     assert!(html.contains("routines jobs failed:"));
+}
+
+#[tokio::test]
+async fn functional_dashboard_shell_endpoint_returns_html_shell() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+
+    let client = Client::new();
+    let response = client
+        .get(format!("http://{addr}{DASHBOARD_SHELL_ENDPOINT}"))
+        .send()
+        .await
+        .expect("dashboard shell request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    assert!(content_type.contains("text/html"));
+    let body = response.text().await.expect("read dashboard shell body");
+    assert!(body.contains("Tau Ops Dashboard"));
+    assert!(body.contains("id=\"dashboard-shell-view-overview\""));
+    assert!(body.contains("id=\"dashboard-shell-view-sessions\""));
+    assert!(body.contains("id=\"dashboard-shell-view-memory\""));
+    assert!(body.contains("id=\"dashboard-shell-view-configuration\""));
+    handle.abort();
 }
 
 #[tokio::test]
@@ -4914,6 +4957,10 @@ async fn integration_gateway_status_endpoint_returns_service_snapshot() {
     assert_eq!(
         payload["gateway"]["webchat_endpoint"].as_str(),
         Some(WEBCHAT_ENDPOINT)
+    );
+    assert_eq!(
+        payload["gateway"]["dashboard_shell_endpoint"].as_str(),
+        Some(DASHBOARD_SHELL_ENDPOINT)
     );
     assert_eq!(
         payload["gateway"]["status_endpoint"].as_str(),
