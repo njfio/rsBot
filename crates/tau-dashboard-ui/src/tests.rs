@@ -120,6 +120,47 @@ fn spec_c05_non_deploy_route_hides_deploy_panel_markers() {
 }
 
 #[test]
+fn spec_c01_stream_contract_declares_websocket_connect_on_load() {
+    let html = render_tau_ops_dashboard_shell();
+    assert!(html.contains("id=\"tau-ops-stream-contract\""));
+    assert!(html.contains("data-stream-transport=\"websocket\""));
+    assert!(html.contains("data-stream-connect-on-load=\"true\""));
+}
+
+#[test]
+fn spec_c02_stream_contract_declares_heartbeat_target() {
+    let html = render_tau_ops_dashboard_shell();
+    assert!(html.contains("data-heartbeat-target=\"tau-ops-kpi-grid\""));
+}
+
+#[test]
+fn spec_c03_stream_contract_declares_alert_feed_target() {
+    let html = render_tau_ops_dashboard_shell();
+    assert!(html.contains("data-alert-feed-target=\"tau-ops-alert-feed-list\""));
+}
+
+#[test]
+fn spec_c04_stream_contract_declares_chat_token_stream_without_polling() {
+    let html = render_tau_ops_dashboard_shell();
+    assert!(html.contains("data-chat-stream-mode=\"websocket\""));
+    assert!(html.contains("data-chat-polling=\"disabled\""));
+}
+
+#[test]
+fn spec_c05_stream_contract_declares_connector_health_target() {
+    let html = render_tau_ops_dashboard_shell();
+    assert!(html.contains("data-connector-health-target=\"tau-ops-connector-table-body\""));
+}
+
+#[test]
+fn spec_c06_stream_contract_declares_reconnect_backoff_strategy() {
+    let html = render_tau_ops_dashboard_shell();
+    assert!(html.contains("data-reconnect-strategy=\"exponential-backoff\""));
+    assert!(html.contains("data-reconnect-base-ms=\"250\""));
+    assert!(html.contains("data-reconnect-max-ms=\"8000\""));
+}
+
+#[test]
 fn functional_spec_2786_c03_shell_exposes_auth_bootstrap_markers() {
     let html = render_tau_ops_dashboard_shell();
     assert!(html.contains("id=\"tau-ops-auth-shell\""));

@@ -1193,6 +1193,22 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                     </section>
                     <main id="tau-ops-protected-shell" data-route="/ops" aria-hidden=protected_hidden>
                         <section
+                            id="tau-ops-stream-contract"
+                            data-component="RealtimeStreamContract"
+                            data-stream-transport="websocket"
+                            data-stream-connect-on-load="true"
+                            data-heartbeat-target="tau-ops-kpi-grid"
+                            data-alert-feed-target="tau-ops-alert-feed-list"
+                            data-chat-stream-mode="websocket"
+                            data-chat-polling="disabled"
+                            data-connector-health-target="tau-ops-connector-table-body"
+                            data-reconnect-strategy="exponential-backoff"
+                            data-reconnect-base-ms="250"
+                            data-reconnect-max-ms="8000"
+                        >
+                            <h2>Real-Time Stream Contracts</h2>
+                        </section>
+                        <section
                             id="tau-ops-chat-panel"
                             data-route="/ops/chat"
                             aria-hidden=chat_panel_hidden
