@@ -29,6 +29,8 @@ Execute production implementation slices from the Tau Ops Dashboard PRD by addin
 - Completed Task: #2691
 - Completed Story: #2693
 - Completed Task: #2694
+- Completed Story: #2696
+- Completed Task: #2697
 
 ## Deliverables
 - Completed (`#2667`):
@@ -90,9 +92,16 @@ Execute production implementation slices from the Tau Ops Dashboard PRD by addin
     - `POST /gateway/jobs/{job_id}/cancel`
   - Runtime-backed deterministic job list/cancel contracts mapped to external coding-agent sessions.
   - Status discovery metadata for jobs list/cancel endpoints.
+- Completed (`#2697`):
+  - Gateway deploy endpoint:
+    - `POST /gateway/deploy`
+  - Gateway stop endpoint:
+    - `POST /gateway/agents/{agent_id}/stop`
+  - Deterministic persisted deploy/stop runtime state and fail-closed validation/error contracts.
+  - Status discovery metadata for deploy/stop endpoints.
 
 ## Exit Criteria
 - Epic #2665 is closed with all scoped PRD phase-1 tasks completed.
-- `specs/2667/spec.md`, `specs/2670/spec.md`, `specs/2673/spec.md`, `specs/2676/spec.md`, `specs/2679/spec.md`, `specs/2682/spec.md`, `specs/2685/spec.md`, `specs/2688/spec.md`, `specs/2691/spec.md`, and `specs/2694/spec.md` status are `Implemented`.
+- `specs/2667/spec.md`, `specs/2670/spec.md`, `specs/2673/spec.md`, `specs/2676/spec.md`, `specs/2679/spec.md`, `specs/2682/spec.md`, `specs/2685/spec.md`, `specs/2688/spec.md`, `specs/2691/spec.md`, `specs/2694/spec.md`, and `specs/2697/spec.md` status are `Implemented`.
 - Scoped verification gates pass with evidence (`fmt`, `clippy -p tau-gateway`, targeted tests).
 - PRD checklist progress is updated for completed phase-1 endpoint slices.

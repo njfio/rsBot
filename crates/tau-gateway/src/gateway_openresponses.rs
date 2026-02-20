@@ -59,6 +59,7 @@ use crate::remote_profile::GatewayOpenResponsesAuthMode;
 mod audit_runtime;
 mod auth_runtime;
 mod dashboard_status;
+mod deploy_runtime;
 mod jobs_runtime;
 mod multi_channel_status;
 mod openai_compat;
@@ -82,6 +83,7 @@ use dashboard_status::{
     apply_gateway_dashboard_action, collect_gateway_dashboard_snapshot,
     GatewayDashboardActionRequest,
 };
+use deploy_runtime::{handle_gateway_agent_stop, handle_gateway_deploy};
 use jobs_runtime::{handle_gateway_job_cancel, handle_gateway_jobs_list};
 use multi_channel_status::collect_gateway_multi_channel_status_report;
 use openai_compat::{
@@ -147,6 +149,8 @@ const GATEWAY_TOOLS_ENDPOINT: &str = "/gateway/tools";
 const GATEWAY_TOOLS_STATS_ENDPOINT: &str = "/gateway/tools/stats";
 const GATEWAY_JOBS_ENDPOINT: &str = "/gateway/jobs";
 const GATEWAY_JOB_CANCEL_ENDPOINT_TEMPLATE: &str = "/gateway/jobs/{job_id}/cancel";
+const GATEWAY_DEPLOY_ENDPOINT: &str = "/gateway/deploy";
+const GATEWAY_AGENT_STOP_ENDPOINT_TEMPLATE: &str = "/gateway/agents/{agent_id}/stop";
 const GATEWAY_UI_TELEMETRY_ENDPOINT: &str = "/gateway/ui/telemetry";
 const DASHBOARD_HEALTH_ENDPOINT: &str = "/dashboard/health";
 const DASHBOARD_WIDGETS_ENDPOINT: &str = "/dashboard/widgets";
@@ -838,6 +842,11 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
             GATEWAY_JOB_CANCEL_ENDPOINT_TEMPLATE,
             post(handle_gateway_job_cancel),
         )
+        .route(GATEWAY_DEPLOY_ENDPOINT, post(handle_gateway_deploy))
+        .route(
+            GATEWAY_AGENT_STOP_ENDPOINT_TEMPLATE,
+            post(handle_gateway_agent_stop),
+        )
         .route(
             GATEWAY_UI_TELEMETRY_ENDPOINT,
             post(handle_gateway_ui_telemetry),
@@ -959,6 +968,8 @@ async fn handle_gateway_status(
                     "tool_stats_endpoint": GATEWAY_TOOLS_STATS_ENDPOINT,
                     "jobs_endpoint": GATEWAY_JOBS_ENDPOINT,
                     "job_cancel_endpoint_template": GATEWAY_JOB_CANCEL_ENDPOINT_TEMPLATE,
+                    "deploy_endpoint": GATEWAY_DEPLOY_ENDPOINT,
+                    "agent_stop_endpoint_template": GATEWAY_AGENT_STOP_ENDPOINT_TEMPLATE,
                     "ui_telemetry_endpoint": GATEWAY_UI_TELEMETRY_ENDPOINT,
                     "policy_gates": {
                         "session_write": SESSION_WRITE_POLICY_GATE,
