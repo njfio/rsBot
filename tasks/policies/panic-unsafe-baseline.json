@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "policy_id": "panic-unsafe-ratchet",
+  "owner_issue": 2927,
+  "approved_by": "codex",
+  "approved_at": "2026-02-20",
+  "rationale": "Ratchet panic!/unsafe growth while audit remediation proceeds; keep review-required buckets at zero.",
+  "thresholds": {
+    "panic_total_max": 122,
+    "panic_review_required_max": 0,
+    "unsafe_total_max": 3,
+    "unsafe_review_required_max": 0
+  },
+  "policy_guide": "docs/guides/panic-unsafe-policy.md"
+}
