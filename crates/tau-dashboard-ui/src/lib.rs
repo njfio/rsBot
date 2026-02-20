@@ -443,6 +443,13 @@ fn extract_first_fenced_code_block(content: &str) -> Option<(String, String)> {
     Some((language.to_string(), code.to_string()))
 }
 
+fn extract_assistant_stream_tokens(content: &str) -> Vec<String> {
+    content
+        .split_whitespace()
+        .map(ToString::to_string)
+        .collect()
+}
+
 /// Public `fn` `render_tau_ops_dashboard_shell` in `tau-dashboard-ui`.
 pub fn render_tau_ops_dashboard_shell() -> String {
     render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext::default())
@@ -1113,11 +1120,42 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                             }
                                             .into_any()
                                         } else if message_row.role == "assistant" {
+                                            let assistant_tokens =
+                                                extract_assistant_stream_tokens(&message_row.content);
+                                            let assistant_token_count =
+                                                assistant_tokens.len().to_string();
+                                            let assistant_token_stream_id =
+                                                format!("tau-ops-chat-token-stream-{index}");
+                                            let render_assistant_tokens = || {
+                                                assistant_tokens
+                                                    .iter()
+                                                    .enumerate()
+                                                    .map(|(token_index, token)| {
+                                                        let token_id = format!(
+                                                            "tau-ops-chat-token-{index}-{token_index}"
+                                                        );
+                                                        let token_index_attr = token_index.to_string();
+                                                        view! {
+                                                            <li
+                                                                id=token_id
+                                                                data-token-index=token_index_attr
+                                                                data-token-value=token.clone()
+                                                            >
+                                                                {token.clone()}
+                                                            </li>
+                                                        }
+                                                    })
+                                                    .collect_view()
+                                            };
                                             let markdown_contract =
                                                 contains_markdown_contract_syntax(&message_row.content);
                                             let code_block_contract =
                                                 extract_first_fenced_code_block(&message_row.content);
                                             if markdown_contract || code_block_contract.is_some() {
+                                                let token_count_row_attr =
+                                                    assistant_token_count.clone();
+                                                let token_count_stream_attr =
+                                                    assistant_token_count.clone();
                                                 let content_view = if markdown_contract {
                                                     let markdown_card_id =
                                                         format!("tau-ops-chat-markdown-{index}");
@@ -1151,16 +1189,44 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                                     },
                                                 );
                                                 view! {
-                                                    <li id=row_id data-message-role=message_row.role.clone()>
+                                                    <li
+                                                        id=row_id
+                                                        data-message-role=message_row.role.clone()
+                                                        data-assistant-token-stream="true"
+                                                        data-token-count=token_count_row_attr
+                                                    >
                                                         {content_view}
                                                         {code_view}
+                                                        <ol
+                                                            id=assistant_token_stream_id.clone()
+                                                            data-token-stream="assistant"
+                                                            data-token-count=token_count_stream_attr
+                                                        >
+                                                            {render_assistant_tokens()}
+                                                        </ol>
                                                     </li>
                                                 }
                                                 .into_any()
                                             } else {
+                                                let token_count_row_attr =
+                                                    assistant_token_count.clone();
+                                                let token_count_stream_attr =
+                                                    assistant_token_count.clone();
                                                 view! {
-                                                    <li id=row_id data-message-role=message_row.role.clone()>
+                                                    <li
+                                                        id=row_id
+                                                        data-message-role=message_row.role.clone()
+                                                        data-assistant-token-stream="true"
+                                                        data-token-count=token_count_row_attr
+                                                    >
                                                         {message_row.content.clone()}
+                                                        <ol
+                                                            id=assistant_token_stream_id
+                                                            data-token-stream="assistant"
+                                                            data-token-count=token_count_stream_attr
+                                                        >
+                                                            {render_assistant_tokens()}
+                                                        </ol>
                                                     </li>
                                                 }
                                                 .into_any()
@@ -1543,9 +1609,10 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
 #[cfg(test)]
 mod tests {
     use super::{
-        contains_markdown_contract_syntax, extract_first_fenced_code_block,
-        render_tau_ops_dashboard_shell, render_tau_ops_dashboard_shell_with_context,
-        TauOpsDashboardAlertFeedRow, TauOpsDashboardAuthMode, TauOpsDashboardChatMessageRow,
+        contains_markdown_contract_syntax, extract_assistant_stream_tokens,
+        extract_first_fenced_code_block, render_tau_ops_dashboard_shell,
+        render_tau_ops_dashboard_shell_with_context, TauOpsDashboardAlertFeedRow,
+        TauOpsDashboardAuthMode, TauOpsDashboardChatMessageRow,
         TauOpsDashboardChatSessionOptionRow, TauOpsDashboardChatSnapshot,
         TauOpsDashboardCommandCenterSnapshot, TauOpsDashboardConnectorHealthRow,
         TauOpsDashboardRoute, TauOpsDashboardSessionGraphEdgeRow,
@@ -1587,6 +1654,19 @@ mod tests {
             extract_first_fenced_code_block("prefix ```rust\nfn main() {}\n``` suffix"),
             Some(("rust".to_string(), "fn main() {}".to_string()))
         );
+    }
+
+    #[test]
+    fn unit_extract_assistant_stream_tokens_normalizes_whitespace() {
+        assert_eq!(
+            extract_assistant_stream_tokens("stream   one\ntwo"),
+            vec!["stream".to_string(), "one".to_string(), "two".to_string()]
+        );
+    }
+
+    #[test]
+    fn unit_extract_assistant_stream_tokens_ignores_blank_content() {
+        assert!(extract_assistant_stream_tokens("   \n\t  ").is_empty());
     }
 
     #[test]
@@ -2263,6 +2343,48 @@ mod tests {
         assert!(html.contains(
             "id=\"tau-ops-chat-session-option-1\" data-session-key=\"session-zeta\" data-selected=\"true\""
         ));
+    }
+
+    #[test]
+    fn functional_spec_2901_c01_c03_chat_route_renders_assistant_token_stream_markers() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Chat,
+            theme: TauOpsDashboardTheme::Light,
+            sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot {
+                active_session_key: "chat-stream".to_string(),
+                message_rows: vec![
+                    TauOpsDashboardChatMessageRow {
+                        role: "user".to_string(),
+                        content: "operator request".to_string(),
+                    },
+                    TauOpsDashboardChatMessageRow {
+                        role: "assistant".to_string(),
+                        content: "stream one two".to_string(),
+                    },
+                ],
+                ..TauOpsDashboardChatSnapshot::default()
+            },
+        });
+
+        assert!(html.contains(
+            "id=\"tau-ops-chat-message-row-1\" data-message-role=\"assistant\" data-assistant-token-stream=\"true\" data-token-count=\"3\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-chat-token-stream-1\" data-token-stream=\"assistant\" data-token-count=\"3\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-chat-token-1-0\" data-token-index=\"0\" data-token-value=\"stream\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-chat-token-1-1\" data-token-index=\"1\" data-token-value=\"one\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-chat-token-1-2\" data-token-index=\"2\" data-token-value=\"two\""
+        ));
+        assert!(!html.contains("id=\"tau-ops-chat-token-stream-0\""));
     }
 
     #[test]

@@ -1834,6 +1834,55 @@ async fn integration_spec_2870_c04_ops_and_sessions_routes_preserve_hidden_markd
 }
 
 #[tokio::test]
+async fn integration_spec_2901_c01_c02_c03_ops_chat_renders_assistant_token_stream_markers_in_order(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let session_path = gateway_session_path(&state.config.state_dir, "chat-stream-order");
+    let mut store = SessionStore::load(&session_path).expect("load chat stream session");
+    let root = store
+        .append_messages(None, &[Message::system("chat-stream-root")])
+        .expect("append root");
+    let user_head = store
+        .append_messages(root, &[Message::user("operator request")])
+        .expect("append user");
+    store
+        .append_messages(user_head, &[Message::assistant_text("stream   one\ntwo")])
+        .expect("append assistant stream message");
+
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/chat?theme=light&sidebar=collapsed&session=chat-stream-order"
+        ))
+        .send()
+        .await
+        .expect("ops chat stream request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops chat stream body");
+
+    assert!(body.contains("id=\"tau-ops-chat-message-row-0\" data-message-role=\"user\""));
+    assert!(!body.contains("id=\"tau-ops-chat-token-stream-0\""));
+    assert!(body.contains(
+        "id=\"tau-ops-chat-message-row-1\" data-message-role=\"assistant\" data-assistant-token-stream=\"true\" data-token-count=\"3\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-chat-token-stream-1\" data-token-stream=\"assistant\" data-token-count=\"3\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-chat-token-1-0\" data-token-index=\"0\" data-token-value=\"stream\""
+    ));
+    assert!(body
+        .contains("id=\"tau-ops-chat-token-1-1\" data-token-index=\"1\" data-token-value=\"one\""));
+    assert!(body
+        .contains("id=\"tau-ops-chat-token-1-2\" data-token-index=\"2\" data-token-value=\"two\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2834_c01_ops_chat_shell_exposes_session_selector_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");
