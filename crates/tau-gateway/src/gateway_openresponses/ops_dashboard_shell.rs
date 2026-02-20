@@ -120,6 +120,8 @@ pub(super) struct OpsDashboardMemoryCreateForm {
     #[serde(default)]
     session: String,
     #[serde(default)]
+    operation: String,
+    #[serde(default)]
     entry_id: String,
     #[serde(default)]
     summary: String,
@@ -170,6 +172,10 @@ fn normalize_memory_form_text(value: &str) -> Option<String> {
 }
 
 impl OpsDashboardMemoryCreateForm {
+    fn is_edit_operation(&self) -> bool {
+        self.operation.trim() == "edit"
+    }
+
     fn resolved_session_key(&self) -> String {
         let requested = self.session.trim();
         let resolved = if requested.is_empty() {
@@ -783,6 +789,7 @@ pub(super) async fn handle_ops_dashboard_memory_create(
     Form(form): Form<OpsDashboardMemoryCreateForm>,
 ) -> Response {
     let session_key = form.resolved_session_key();
+    let is_edit_operation = form.is_edit_operation();
     let fallback_redirect_path = build_ops_memory_redirect_path(
         form.resolved_theme(),
         form.resolved_sidebar_state(),
@@ -814,6 +821,20 @@ pub(super) async fn handle_ops_dashboard_memory_create(
     let relation_inputs = form.resolved_relations();
 
     let store = gateway_memory_store(&state.config.state_dir, session_key.as_str());
+    if is_edit_operation {
+        match store.read_entry(entry_id.as_str(), None) {
+            Ok(Some(_)) => {}
+            Ok(None) => return Redirect::to(fallback_redirect_path.as_str()).into_response(),
+            Err(error) => {
+                return OpenResponsesApiError::internal(format!(
+                    "failed to load memory entry '{}' for session '{}': {error}",
+                    entry_id, session_key
+                ))
+                .into_response();
+            }
+        }
+    }
+
     let write_result = match store.write_entry_with_metadata_and_relations(
         &scope,
         entry,
@@ -824,14 +845,19 @@ pub(super) async fn handle_ops_dashboard_memory_create(
         Ok(result) => result,
         Err(error) => {
             return OpenResponsesApiError::internal(format!(
-                "failed to create memory entry '{}' for session '{}': {error}",
+                "failed to upsert memory entry '{}' for session '{}': {error}",
                 entry_id, session_key
             ))
             .into_response();
         }
     };
 
-    state.record_ui_telemetry_event("memory", "entry_write", "ops_memory_create_form_submitted");
+    let reason_code = if is_edit_operation {
+        "ops_memory_edit_form_submitted"
+    } else {
+        "ops_memory_create_form_submitted"
+    };
+    state.record_ui_telemetry_event("memory", "entry_write", reason_code);
     record_cortex_memory_entry_write_event(
         &state.config.state_dir,
         session_key.as_str(),

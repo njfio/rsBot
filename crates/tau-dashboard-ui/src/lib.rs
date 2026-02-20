@@ -713,6 +713,29 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
         "updated" => "Memory entry updated.".to_string(),
         _ => "Create a memory entry.".to_string(),
     };
+    let memory_edit_form_action = memory_create_form_action.clone();
+    let memory_edit_form_method = memory_create_form_method.clone();
+    let memory_edit_status_panel_attr = memory_create_status.clone();
+    let memory_edit_edited_memory_id_panel_attr = memory_create_created_entry_id.clone();
+    let memory_edit_status_marker_attr = memory_create_status.clone();
+    let memory_edit_edited_memory_id_marker_attr = memory_create_created_entry_id.clone();
+    let memory_edit_entry_id = memory_create_created_entry_id.clone();
+    let memory_edit_summary = memory_create_summary.clone();
+    let memory_edit_tags = memory_create_tags.clone();
+    let memory_edit_facts = memory_create_facts.clone();
+    let memory_edit_source_event_key = memory_create_source_event_key.clone();
+    let memory_edit_workspace_id = memory_create_workspace_id.clone();
+    let memory_edit_channel_id = memory_create_channel_id.clone();
+    let memory_edit_actor_id = memory_create_actor_id.clone();
+    let memory_edit_memory_type = memory_create_memory_type.clone();
+    let memory_edit_importance = memory_create_importance.clone();
+    let memory_edit_relation_target_id = memory_create_relation_target_id.clone();
+    let memory_edit_relation_type = memory_create_relation_type.clone();
+    let memory_edit_relation_weight = memory_create_relation_weight.clone();
+    let memory_edit_status_message = match memory_create_status.as_str() {
+        "updated" => "Memory entry updated.".to_string(),
+        _ => "Edit an existing memory entry.".to_string(),
+    };
     let memory_results_view = if memory_search_rows.is_empty() {
         leptos::either::Either::Left(view! {
             <li id="tau-ops-memory-empty-state" data-empty-state="true">
@@ -1500,6 +1523,8 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                             data-memory-type=memory_type_panel_attr
                             data-create-status=memory_create_status_panel_attr
                             data-created-memory-id=memory_create_created_entry_id_panel_attr
+                            data-edit-status=memory_edit_status_panel_attr
+                            data-edited-memory-id=memory_edit_edited_memory_id_panel_attr
                         >
                             <h2>Memory Explorer</h2>
                             <form
@@ -1583,6 +1608,12 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                     type="hidden"
                                     name="session"
                                     value=chat_session_key.clone()
+                                />
+                                <input
+                                    id="tau-ops-memory-create-operation"
+                                    type="hidden"
+                                    name="operation"
+                                    value="create"
                                 />
                                 <label for="tau-ops-memory-create-entry-id">Entry ID</label>
                                 <input
@@ -1679,6 +1710,134 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                 />
                                 <button id="tau-ops-memory-create-button" type="submit">
                                     Create Entry
+                                </button>
+                            </form>
+                            <p
+                                id="tau-ops-memory-edit-status"
+                                data-edit-status=memory_edit_status_marker_attr
+                                data-edited-memory-id=memory_edit_edited_memory_id_marker_attr
+                            >
+                                {memory_edit_status_message}
+                            </p>
+                            <form
+                                id="tau-ops-memory-edit-form"
+                                action=memory_edit_form_action
+                                method=memory_edit_form_method
+                            >
+                                <input id="tau-ops-memory-edit-theme" type="hidden" name="theme" value=theme_attr />
+                                <input
+                                    id="tau-ops-memory-edit-sidebar"
+                                    type="hidden"
+                                    name="sidebar"
+                                    value=sidebar_state_attr
+                                />
+                                <input
+                                    id="tau-ops-memory-edit-session"
+                                    type="hidden"
+                                    name="session"
+                                    value=chat_session_key.clone()
+                                />
+                                <input
+                                    id="tau-ops-memory-edit-operation"
+                                    type="hidden"
+                                    name="operation"
+                                    value="edit"
+                                />
+                                <label for="tau-ops-memory-edit-entry-id">Entry ID</label>
+                                <input
+                                    id="tau-ops-memory-edit-entry-id"
+                                    type="text"
+                                    name="entry_id"
+                                    value=memory_edit_entry_id
+                                />
+                                <label for="tau-ops-memory-edit-summary">Summary</label>
+                                <input
+                                    id="tau-ops-memory-edit-summary"
+                                    type="text"
+                                    name="summary"
+                                    value=memory_edit_summary
+                                />
+                                <label for="tau-ops-memory-edit-tags">Tags</label>
+                                <input
+                                    id="tau-ops-memory-edit-tags"
+                                    type="text"
+                                    name="tags"
+                                    value=memory_edit_tags
+                                />
+                                <label for="tau-ops-memory-edit-facts">Facts</label>
+                                <input
+                                    id="tau-ops-memory-edit-facts"
+                                    type="text"
+                                    name="facts"
+                                    value=memory_edit_facts
+                                />
+                                <label for="tau-ops-memory-edit-source-event-key">Source Event Key</label>
+                                <input
+                                    id="tau-ops-memory-edit-source-event-key"
+                                    type="text"
+                                    name="source_event_key"
+                                    value=memory_edit_source_event_key
+                                />
+                                <label for="tau-ops-memory-edit-workspace-id">Workspace</label>
+                                <input
+                                    id="tau-ops-memory-edit-workspace-id"
+                                    type="text"
+                                    name="workspace_id"
+                                    value=memory_edit_workspace_id
+                                />
+                                <label for="tau-ops-memory-edit-channel-id">Channel</label>
+                                <input
+                                    id="tau-ops-memory-edit-channel-id"
+                                    type="text"
+                                    name="channel_id"
+                                    value=memory_edit_channel_id
+                                />
+                                <label for="tau-ops-memory-edit-actor-id">Actor</label>
+                                <input
+                                    id="tau-ops-memory-edit-actor-id"
+                                    type="text"
+                                    name="actor_id"
+                                    value=memory_edit_actor_id
+                                />
+                                <label for="tau-ops-memory-edit-memory-type">Memory Type</label>
+                                <input
+                                    id="tau-ops-memory-edit-memory-type"
+                                    type="text"
+                                    name="memory_type"
+                                    value=memory_edit_memory_type
+                                />
+                                <label for="tau-ops-memory-edit-importance">Importance</label>
+                                <input
+                                    id="tau-ops-memory-edit-importance"
+                                    type="number"
+                                    step="0.01"
+                                    name="importance"
+                                    value=memory_edit_importance
+                                />
+                                <label for="tau-ops-memory-edit-relation-target-id">Relation Target</label>
+                                <input
+                                    id="tau-ops-memory-edit-relation-target-id"
+                                    type="text"
+                                    name="relation_target_id"
+                                    value=memory_edit_relation_target_id
+                                />
+                                <label for="tau-ops-memory-edit-relation-type">Relation Type</label>
+                                <input
+                                    id="tau-ops-memory-edit-relation-type"
+                                    type="text"
+                                    name="relation_type"
+                                    value=memory_edit_relation_type
+                                />
+                                <label for="tau-ops-memory-edit-relation-weight">Relation Weight</label>
+                                <input
+                                    id="tau-ops-memory-edit-relation-weight"
+                                    type="number"
+                                    step="0.01"
+                                    name="relation_weight"
+                                    value=memory_edit_relation_weight
+                                />
+                                <button id="tau-ops-memory-edit-button" type="submit">
+                                    Update Entry
                                 </button>
                             </form>
                             <ul id="tau-ops-memory-results" data-result-count=memory_result_count_list_attr>
@@ -2846,6 +3005,63 @@ mod tests {
         assert!(html.contains(
             "id=\"tau-ops-memory-create-relation-weight\" type=\"number\" step=\"0.01\" name=\"relation_weight\" value=\"\""
         ));
+    }
+
+    #[test]
+    fn functional_spec_2921_c01_c03_memory_route_renders_edit_form_and_status_markers() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Memory,
+            theme: TauOpsDashboardTheme::Light,
+            sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot::default(),
+        });
+
+        assert!(
+            html.contains("id=\"tau-ops-memory-edit-status\" data-edit-status=\"idle\" data-edited-memory-id=\"\"")
+        );
+        assert!(
+            html.contains("id=\"tau-ops-memory-edit-form\" action=\"/ops/memory\" method=\"post\"")
+        );
+        assert!(html.contains(
+            "id=\"tau-ops-memory-edit-operation\" type=\"hidden\" name=\"operation\" value=\"edit\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-memory-edit-entry-id\" type=\"text\" name=\"entry_id\" value=\"\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-memory-edit-summary\" type=\"text\" name=\"summary\" value=\"\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-memory-edit-memory-type\" type=\"text\" name=\"memory_type\" value=\"\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-memory-edit-importance\" type=\"number\" step=\"0.01\" name=\"importance\" value=\"\""
+        ));
+    }
+
+    #[test]
+    fn regression_spec_2921_memory_edit_status_updated_renders_updated_message_marker() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Memory,
+            theme: TauOpsDashboardTheme::Light,
+            sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot {
+                memory_create_status: "updated".to_string(),
+                memory_create_created_entry_id: "mem-edit-1".to_string(),
+                ..TauOpsDashboardChatSnapshot::default()
+            },
+        });
+
+        let edit_status_marker = "id=\"tau-ops-memory-edit-status\" data-edit-status=\"updated\" data-edited-memory-id=\"mem-edit-1\"";
+        assert!(html.contains(edit_status_marker));
+        let edit_section = &html[html
+            .find(edit_status_marker)
+            .expect("edit status marker should be rendered when status is updated")..];
+        assert!(edit_section.contains(">Memory entry updated.</p>"));
     }
 
     #[test]
