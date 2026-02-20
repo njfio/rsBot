@@ -1096,6 +1096,13 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
             <header id="tau-ops-header">
                 <h1>Tau Ops Dashboard</h1>
                 <p>Leptos SSR foundation shell</p>
+                <a
+                    id="tau-ops-skip-to-main"
+                    href="#tau-ops-protected-shell"
+                    data-keyboard-navigation="true"
+                >
+                    Skip to main content
+                </a>
                 <div id="tau-ops-shell-controls">
                     <input
                         id="tau-ops-sidebar-toggle"
@@ -1192,6 +1199,21 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                         </form>
                     </section>
                     <main id="tau-ops-protected-shell" data-route="/ops" aria-hidden=protected_hidden>
+                        <section
+                            id="tau-ops-accessibility-contract"
+                            data-component="AccessibilityContract"
+                            data-axe-contract="required"
+                            data-keyboard-navigation="true"
+                            data-focus-visible-contract="true"
+                            data-focus-ring-token="tau-focus-ring"
+                            data-reduced-motion-contract="prefers-reduced-motion"
+                            data-reduced-motion-behavior="suppress-nonessential-animation"
+                        >
+                            <h2>Accessibility Contracts</h2>
+                            <p id="tau-ops-live-announcer" aria-live="polite" aria-atomic="true">
+                                Accessibility live region ready.
+                            </p>
+                        </section>
                         <section
                             id="tau-ops-stream-contract"
                             data-component="RealtimeStreamContract"

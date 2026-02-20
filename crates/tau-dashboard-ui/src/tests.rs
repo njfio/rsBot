@@ -161,6 +161,42 @@ fn spec_c06_stream_contract_declares_reconnect_backoff_strategy() {
 }
 
 #[test]
+fn spec_c01_accessibility_contract_section_marker_exists() {
+    let html = render_tau_ops_dashboard_shell();
+    assert!(html.contains("id=\"tau-ops-accessibility-contract\""));
+    assert!(html.contains("data-axe-contract=\"required\""));
+}
+
+#[test]
+fn spec_c02_accessibility_keyboard_navigation_markers_exist() {
+    let html = render_tau_ops_dashboard_shell();
+    assert!(html.contains("id=\"tau-ops-skip-to-main\""));
+    assert!(html.contains("data-keyboard-navigation=\"true\""));
+}
+
+#[test]
+fn spec_c03_accessibility_live_region_markers_exist() {
+    let html = render_tau_ops_dashboard_shell();
+    assert!(html.contains("id=\"tau-ops-live-announcer\""));
+    assert!(html.contains("aria-live=\"polite\""));
+    assert!(html.contains("aria-atomic=\"true\""));
+}
+
+#[test]
+fn spec_c04_accessibility_focus_indicator_markers_exist() {
+    let html = render_tau_ops_dashboard_shell();
+    assert!(html.contains("data-focus-visible-contract=\"true\""));
+    assert!(html.contains("data-focus-ring-token=\"tau-focus-ring\""));
+}
+
+#[test]
+fn spec_c05_accessibility_reduced_motion_marker_exists() {
+    let html = render_tau_ops_dashboard_shell();
+    assert!(html.contains("data-reduced-motion-contract=\"prefers-reduced-motion\""));
+    assert!(html.contains("data-reduced-motion-behavior=\"suppress-nonessential-animation\""));
+}
+
+#[test]
 fn functional_spec_2786_c03_shell_exposes_auth_bootstrap_markers() {
     let html = render_tau_ops_dashboard_shell();
     assert!(html.contains("id=\"tau-ops-auth-shell\""));
