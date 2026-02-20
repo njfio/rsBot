@@ -202,6 +202,16 @@ pub struct TauOpsDashboardAlertFeedRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TauOpsDashboardConnectorHealthRow` in `tau-dashboard-ui`.
+pub struct TauOpsDashboardConnectorHealthRow {
+    pub channel: String,
+    pub mode: String,
+    pub liveness: String,
+    pub events_ingested: u64,
+    pub provider_failures: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Public struct `TauOpsDashboardCommandCenterSnapshot` in `tau-dashboard-ui`.
 pub struct TauOpsDashboardCommandCenterSnapshot {
     pub health_state: String,
@@ -230,6 +240,7 @@ pub struct TauOpsDashboardCommandCenterSnapshot {
     pub primary_alert_severity: String,
     pub primary_alert_message: String,
     pub alert_feed_rows: Vec<TauOpsDashboardAlertFeedRow>,
+    pub connector_health_rows: Vec<TauOpsDashboardConnectorHealthRow>,
 }
 
 impl Default for TauOpsDashboardCommandCenterSnapshot {
@@ -264,6 +275,13 @@ impl Default for TauOpsDashboardCommandCenterSnapshot {
                 code: "none".to_string(),
                 severity: "info".to_string(),
                 message: "No alerts loaded".to_string(),
+            }],
+            connector_health_rows: vec![TauOpsDashboardConnectorHealthRow {
+                channel: "none".to_string(),
+                mode: "unknown".to_string(),
+                liveness: "unknown".to_string(),
+                events_ingested: 0,
+                provider_failures: 0,
             }],
         }
     }
@@ -407,6 +425,20 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     let alert_row_count_value = alert_feed_rows.len().to_string();
     let alert_row_count_section_value = alert_row_count_value.clone();
     let alert_row_count_list_value = alert_row_count_value;
+    let connector_health_rows = if context.command_center.connector_health_rows.is_empty() {
+        vec![TauOpsDashboardConnectorHealthRow {
+            channel: "none".to_string(),
+            mode: "unknown".to_string(),
+            liveness: "unknown".to_string(),
+            events_ingested: 0,
+            provider_failures: 0,
+        }]
+    } else {
+        context.command_center.connector_health_rows.clone()
+    };
+    let connector_row_count_value = connector_health_rows.len().to_string();
+    let connector_row_count_table_value = connector_row_count_value.clone();
+    let connector_row_count_body_value = connector_row_count_value;
     let widget_count_value = context.command_center.widget_count.to_string();
     let timeline_cycle_count_value = context.command_center.timeline_cycle_count.to_string();
     let timeline_cycle_count_table_value = timeline_cycle_count_value.clone();
@@ -675,6 +707,57 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                 </ul>
                             </section>
                             <section
+                                id="tau-ops-connector-health-table"
+                                data-component="ConnectorHealthTable"
+                                data-connector-row-count=connector_row_count_table_value
+                            >
+                                <h2>Connector Health</h2>
+                                <table>
+                                    <thead>
+                                        <tr>
+                                            <th scope="col">Channel</th>
+                                            <th scope="col">Mode</th>
+                                            <th scope="col">Liveness</th>
+                                            <th scope="col">Events Ingested</th>
+                                            <th scope="col">Provider Failures</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody
+                                        id="tau-ops-connector-table-body"
+                                        data-connector-row-count=connector_row_count_body_value
+                                    >
+                                        {connector_health_rows
+                                            .iter()
+                                            .enumerate()
+                                            .map(|(index, connector_row)| {
+                                                let connector_row_id =
+                                                    format!("tau-ops-connector-row-{index}");
+                                                let events_ingested_value =
+                                                    connector_row.events_ingested.to_string();
+                                                let provider_failures_value =
+                                                    connector_row.provider_failures.to_string();
+                                                view! {
+                                                    <tr
+                                                        id=connector_row_id
+                                                        data-channel=connector_row.channel.clone()
+                                                        data-mode=connector_row.mode.clone()
+                                                        data-liveness=connector_row.liveness.clone()
+                                                        data-events-ingested=events_ingested_value
+                                                        data-provider-failures=provider_failures_value
+                                                    >
+                                                        <td>{connector_row.channel.clone()}</td>
+                                                        <td>{connector_row.mode.clone()}</td>
+                                                        <td>{connector_row.liveness.clone()}</td>
+                                                        <td>{connector_row.events_ingested}</td>
+                                                        <td>{connector_row.provider_failures}</td>
+                                                    </tr>
+                                                }
+                                            })
+                                            .collect_view()}
+                                    </tbody>
+                                </table>
+                            </section>
+                            <section
                                 id="tau-ops-data-table"
                                 data-component="DataTable"
                                 data-timeline-cycle-count=timeline_cycle_count_table_value
@@ -710,8 +793,8 @@ mod tests {
     use super::{
         render_tau_ops_dashboard_shell, render_tau_ops_dashboard_shell_with_context,
         TauOpsDashboardAlertFeedRow, TauOpsDashboardAuthMode, TauOpsDashboardCommandCenterSnapshot,
-        TauOpsDashboardRoute, TauOpsDashboardShellContext, TauOpsDashboardSidebarState,
-        TauOpsDashboardTheme,
+        TauOpsDashboardConnectorHealthRow, TauOpsDashboardRoute, TauOpsDashboardShellContext,
+        TauOpsDashboardSidebarState, TauOpsDashboardTheme,
     };
 
     #[test]
@@ -951,6 +1034,7 @@ mod tests {
                 primary_alert_severity: "warning".to_string(),
                 primary_alert_message: "runtime backlog detected (queue_depth=3)".to_string(),
                 alert_feed_rows: vec![],
+                connector_health_rows: vec![],
             },
         });
 
@@ -1020,6 +1104,7 @@ mod tests {
                 primary_alert_severity: "warning".to_string(),
                 primary_alert_message: "runtime backlog detected (queue_depth=1)".to_string(),
                 alert_feed_rows: vec![],
+                connector_health_rows: vec![],
             },
         });
 
@@ -1070,6 +1155,7 @@ mod tests {
                 primary_alert_severity: "warning".to_string(),
                 primary_alert_message: "runtime backlog detected (queue_depth=1)".to_string(),
                 alert_feed_rows: vec![],
+                connector_health_rows: vec![],
             },
         });
 
@@ -1137,6 +1223,7 @@ mod tests {
                         message: "runtime events log contains 1 malformed line(s)".to_string(),
                     },
                 ],
+                connector_health_rows: vec![],
             },
         });
 
@@ -1188,6 +1275,7 @@ mod tests {
                     severity: "info".to_string(),
                     message: "dashboard runtime health is nominal".to_string(),
                 }],
+                connector_health_rows: vec![],
             },
         });
 
@@ -1196,5 +1284,109 @@ mod tests {
             "id=\"tau-ops-alert-row-0\" data-alert-code=\"dashboard_healthy\" data-alert-severity=\"info\""
         ));
         assert!(html.contains("dashboard runtime health is nominal"));
+    }
+
+    #[test]
+    fn functional_spec_2822_c03_connector_health_table_renders_fallback_row_markers() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Ops,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot {
+                health_state: "healthy".to_string(),
+                health_reason: "dashboard runtime health is nominal".to_string(),
+                rollout_gate: "pass".to_string(),
+                control_mode: "running".to_string(),
+                control_paused: false,
+                action_pause_enabled: true,
+                action_resume_enabled: false,
+                action_refresh_enabled: true,
+                last_action_request_id: "none".to_string(),
+                last_action_name: "none".to_string(),
+                last_action_actor: "none".to_string(),
+                last_action_timestamp_unix_ms: 0,
+                timeline_range: "1h".to_string(),
+                timeline_point_count: 1,
+                timeline_last_timestamp_unix_ms: 900,
+                queue_depth: 0,
+                failure_streak: 0,
+                processed_case_count: 1,
+                alert_count: 1,
+                widget_count: 1,
+                timeline_cycle_count: 1,
+                timeline_invalid_cycle_count: 0,
+                primary_alert_code: "dashboard_healthy".to_string(),
+                primary_alert_severity: "info".to_string(),
+                primary_alert_message: "dashboard runtime health is nominal".to_string(),
+                alert_feed_rows: vec![TauOpsDashboardAlertFeedRow {
+                    code: "dashboard_healthy".to_string(),
+                    severity: "info".to_string(),
+                    message: "dashboard runtime health is nominal".to_string(),
+                }],
+                connector_health_rows: vec![],
+            },
+        });
+
+        assert!(html.contains("id=\"tau-ops-connector-health-table\""));
+        assert!(html.contains("id=\"tau-ops-connector-table-body\""));
+        assert!(html.contains(
+            "id=\"tau-ops-connector-row-0\" data-channel=\"none\" data-mode=\"unknown\" data-liveness=\"unknown\" data-events-ingested=\"0\" data-provider-failures=\"0\""
+        ));
+    }
+
+    #[test]
+    fn functional_spec_2822_c01_c02_connector_health_table_rows_render_for_snapshot_connectors() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Ops,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot {
+                health_state: "degraded".to_string(),
+                health_reason: "connector retry in progress".to_string(),
+                rollout_gate: "hold".to_string(),
+                control_mode: "running".to_string(),
+                control_paused: false,
+                action_pause_enabled: true,
+                action_resume_enabled: false,
+                action_refresh_enabled: true,
+                last_action_request_id: "none".to_string(),
+                last_action_name: "none".to_string(),
+                last_action_actor: "none".to_string(),
+                last_action_timestamp_unix_ms: 0,
+                timeline_range: "1h".to_string(),
+                timeline_point_count: 1,
+                timeline_last_timestamp_unix_ms: 900,
+                queue_depth: 0,
+                failure_streak: 0,
+                processed_case_count: 1,
+                alert_count: 1,
+                widget_count: 1,
+                timeline_cycle_count: 1,
+                timeline_invalid_cycle_count: 0,
+                primary_alert_code: "dashboard_healthy".to_string(),
+                primary_alert_severity: "info".to_string(),
+                primary_alert_message: "dashboard runtime health is nominal".to_string(),
+                alert_feed_rows: vec![TauOpsDashboardAlertFeedRow {
+                    code: "dashboard_healthy".to_string(),
+                    severity: "info".to_string(),
+                    message: "dashboard runtime health is nominal".to_string(),
+                }],
+                connector_health_rows: vec![TauOpsDashboardConnectorHealthRow {
+                    channel: "telegram".to_string(),
+                    mode: "polling".to_string(),
+                    liveness: "open".to_string(),
+                    events_ingested: 6,
+                    provider_failures: 2,
+                }],
+            },
+        });
+
+        assert!(html.contains("id=\"tau-ops-connector-health-table\""));
+        assert!(html.contains("id=\"tau-ops-connector-table-body\""));
+        assert!(html.contains(
+            "id=\"tau-ops-connector-row-0\" data-channel=\"telegram\" data-mode=\"polling\" data-liveness=\"open\" data-events-ingested=\"6\" data-provider-failures=\"2\""
+        ));
     }
 }

@@ -1423,6 +1423,63 @@ async fn functional_spec_2818_c03_ops_shell_alert_feed_rows_include_nominal_fall
 }
 
 #[tokio::test]
+async fn functional_spec_2822_c01_c02_ops_shell_connector_health_rows_reflect_multi_channel_connectors(
+) {
+    let temp = tempdir().expect("tempdir");
+    write_dashboard_runtime_fixture(temp.path());
+    write_training_runtime_fixture(temp.path(), 0);
+    write_multi_channel_runtime_fixture(temp.path(), true);
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!("http://{addr}/ops"))
+        .send()
+        .await
+        .expect("ops shell request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops shell body");
+
+    assert!(body.contains("id=\"tau-ops-connector-health-table\""));
+    assert!(body.contains("id=\"tau-ops-connector-table-body\""));
+    assert!(body.contains("id=\"tau-ops-connector-row-0\""));
+    assert!(body.contains(
+        "id=\"tau-ops-connector-row-0\" data-channel=\"telegram\" data-mode=\"polling\" data-liveness=\"open\" data-events-ingested=\"6\" data-provider-failures=\"2\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn functional_spec_2822_c03_ops_shell_connector_health_rows_include_fallback_when_state_missing(
+) {
+    let temp = tempdir().expect("tempdir");
+    write_dashboard_runtime_fixture(temp.path());
+    write_training_runtime_fixture(temp.path(), 0);
+    write_multi_channel_runtime_fixture(temp.path(), false);
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!("http://{addr}/ops"))
+        .send()
+        .await
+        .expect("ops shell request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops shell body");
+
+    assert!(body.contains("id=\"tau-ops-connector-health-table\""));
+    assert!(body.contains("id=\"tau-ops-connector-table-body\""));
+    assert!(body.contains(
+        "id=\"tau-ops-connector-row-0\" data-channel=\"none\" data-mode=\"unknown\" data-liveness=\"unknown\" data-events-ingested=\"0\" data-provider-failures=\"0\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_webchat_endpoint_returns_html_shell() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 10_000, "secret");
