@@ -7,6 +7,7 @@ Implements Tau Ops Dashboard PRD Memory checklist item: "Edit existing memory en
 - Epic: #2919
 - Story: #2920
 - Task: #2921
+- Task: #2923
 
 ## Scope
 - Deterministic memory edit-entry form contracts on `/ops/memory`.
@@ -17,3 +18,6 @@ Implements Tau Ops Dashboard PRD Memory checklist item: "Edit existing memory en
 ## Out of Scope
 - Create/delete memory flows.
 - Memory graph contracts.
+
+## Follow-up Remediation
+- #2923 tracks oversized-file guardrail remediation for `crates/tau-dashboard-ui/src/lib.rs` so the temporary exemption can be removed while preserving delivered memory edit contracts.
