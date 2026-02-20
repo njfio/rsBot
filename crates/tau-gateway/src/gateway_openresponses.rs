@@ -80,7 +80,11 @@ use auth_runtime::{
     authorize_gateway_request, collect_gateway_auth_status_report, enforce_gateway_rate_limit,
     issue_gateway_session_token,
 };
-use cortex_runtime::handle_cortex_chat;
+use cortex_runtime::{
+    handle_cortex_chat, handle_cortex_status, record_cortex_external_session_closed,
+    record_cortex_external_session_opened, record_cortex_session_append_event,
+    record_cortex_session_reset_event,
+};
 use dashboard_status::{
     apply_gateway_dashboard_action, collect_gateway_dashboard_snapshot,
     GatewayDashboardActionRequest,
@@ -155,6 +159,7 @@ const GATEWAY_DEPLOY_ENDPOINT: &str = "/gateway/deploy";
 const GATEWAY_AGENT_STOP_ENDPOINT_TEMPLATE: &str = "/gateway/agents/{agent_id}/stop";
 const GATEWAY_UI_TELEMETRY_ENDPOINT: &str = "/gateway/ui/telemetry";
 const CORTEX_CHAT_ENDPOINT: &str = "/cortex/chat";
+const CORTEX_STATUS_ENDPOINT: &str = "/cortex/status";
 const DASHBOARD_HEALTH_ENDPOINT: &str = "/dashboard/health";
 const DASHBOARD_WIDGETS_ENDPOINT: &str = "/dashboard/widgets";
 const DASHBOARD_QUEUE_TIMELINE_ENDPOINT: &str = "/dashboard/queue-timeline";
@@ -855,6 +860,7 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
             post(handle_gateway_ui_telemetry),
         )
         .route(CORTEX_CHAT_ENDPOINT, post(handle_cortex_chat))
+        .route(CORTEX_STATUS_ENDPOINT, get(handle_cortex_status))
         .route(
             EXTERNAL_CODING_AGENT_SESSIONS_ENDPOINT,
             post(handle_external_coding_agent_open_session),
@@ -976,6 +982,7 @@ async fn handle_gateway_status(
                     "agent_stop_endpoint_template": GATEWAY_AGENT_STOP_ENDPOINT_TEMPLATE,
                     "ui_telemetry_endpoint": GATEWAY_UI_TELEMETRY_ENDPOINT,
                     "cortex_chat_endpoint": CORTEX_CHAT_ENDPOINT,
+                    "cortex_status_endpoint": CORTEX_STATUS_ENDPOINT,
                     "policy_gates": {
                         "session_write": SESSION_WRITE_POLICY_GATE,
                         "memory_write": MEMORY_WRITE_POLICY_GATE,
@@ -1443,6 +1450,12 @@ async fn handle_external_coding_agent_open_session(
         Ok(snapshot) => snapshot,
         Err(error) => return map_external_coding_agent_bridge_error(error).into_response(),
     };
+    record_cortex_external_session_opened(
+        &state.config.state_dir,
+        snapshot.session_id.as_str(),
+        snapshot.workspace_id.as_str(),
+        external_coding_agent_status_label(snapshot.status),
+    );
     (
         StatusCode::OK,
         Json(json!({
@@ -1687,6 +1700,12 @@ async fn handle_external_coding_agent_session_close(
         Ok(snapshot) => snapshot,
         Err(error) => return map_external_coding_agent_bridge_error(error).into_response(),
     };
+    record_cortex_external_session_closed(
+        &state.config.state_dir,
+        snapshot.session_id.as_str(),
+        snapshot.workspace_id.as_str(),
+        external_coding_agent_status_label(snapshot.status),
+    );
     (
         StatusCode::OK,
         Json(json!({
@@ -2168,6 +2187,12 @@ async fn handle_gateway_session_append(
     };
 
     state.record_ui_telemetry_event("sessions", "append", "session_message_appended");
+    record_cortex_session_append_event(
+        &state.config.state_dir,
+        session_key.as_str(),
+        new_head,
+        store.entries().len(),
+    );
     (
         StatusCode::OK,
         Json(json!({
@@ -2220,6 +2245,7 @@ async fn handle_gateway_session_reset(
     }
 
     state.record_ui_telemetry_event("sessions", "reset", "session_reset_applied");
+    record_cortex_session_reset_event(&state.config.state_dir, session_key.as_str(), reset);
     (
         StatusCode::OK,
         Json(json!({

@@ -3357,6 +3357,183 @@ async fn regression_spec_2701_c03_c04_cortex_chat_endpoint_rejects_unauthorized_
 }
 
 #[tokio::test]
+async fn integration_spec_2704_c01_c02_c05_cortex_status_endpoint_reports_tracked_runtime_events() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let cortex_chat = client
+        .post("http://".to_string() + &addr.to_string() + "/cortex/chat")
+        .bearer_auth("secret")
+        .json(&json!({"input":"observer-seed"}))
+        .send()
+        .await
+        .expect("cortex chat response");
+    assert_eq!(cortex_chat.status(), StatusCode::OK);
+
+    let append = client
+        .post(format!(
+            "http://{addr}{}",
+            expand_session_template(GATEWAY_SESSION_APPEND_ENDPOINT, "default")
+        ))
+        .bearer_auth("secret")
+        .json(&json!({
+            "role":"user",
+            "content":"track session append",
+            "policy_gate":"allow_session_write"
+        }))
+        .send()
+        .await
+        .expect("session append response");
+    assert_eq!(append.status(), StatusCode::OK);
+
+    let reset = client
+        .post(format!(
+            "http://{addr}{}",
+            expand_session_template(GATEWAY_SESSION_RESET_ENDPOINT, "default")
+        ))
+        .bearer_auth("secret")
+        .json(&json!({
+            "policy_gate":"allow_session_write"
+        }))
+        .send()
+        .await
+        .expect("session reset response");
+    assert_eq!(reset.status(), StatusCode::OK);
+
+    let opened = client
+        .post(format!(
+            "http://{addr}{EXTERNAL_CODING_AGENT_SESSIONS_ENDPOINT}"
+        ))
+        .bearer_auth("secret")
+        .json(&json!({"workspace_id":"workspace-cortex-observer"}))
+        .send()
+        .await
+        .expect("open external coding session")
+        .json::<Value>()
+        .await
+        .expect("parse open session payload");
+    let session_id = opened["session"]["session_id"]
+        .as_str()
+        .expect("session id")
+        .to_string();
+
+    let close = client
+        .post(format!(
+            "http://{addr}{}",
+            resolve_session_endpoint(
+                EXTERNAL_CODING_AGENT_SESSION_CLOSE_ENDPOINT,
+                session_id.as_str()
+            )
+        ))
+        .bearer_auth("secret")
+        .json(&json!({}))
+        .send()
+        .await
+        .expect("close external coding session");
+    assert_eq!(close.status(), StatusCode::OK);
+
+    let cortex_status = client
+        .get("http://".to_string() + &addr.to_string() + "/cortex/status")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("cortex status response");
+    assert_eq!(cortex_status.status(), StatusCode::OK);
+    let cortex_status_payload = cortex_status
+        .json::<Value>()
+        .await
+        .expect("parse cortex status payload");
+    assert_eq!(cortex_status_payload["state_present"], Value::Bool(true));
+    assert!(cortex_status_payload["total_events"]
+        .as_u64()
+        .map(|count| count >= 5)
+        .unwrap_or(false));
+    assert!(
+        cortex_status_payload["event_type_counts"]["cortex.chat.request"]
+            .as_u64()
+            .map(|count| count >= 1)
+            .unwrap_or(false)
+    );
+    assert!(cortex_status_payload["event_type_counts"]["session.append"]
+        .as_u64()
+        .map(|count| count >= 1)
+        .unwrap_or(false));
+    assert!(cortex_status_payload["event_type_counts"]["session.reset"]
+        .as_u64()
+        .map(|count| count >= 1)
+        .unwrap_or(false));
+    assert!(
+        cortex_status_payload["event_type_counts"]["external_coding_agent.session_opened"]
+            .as_u64()
+            .map(|count| count >= 1)
+            .unwrap_or(false)
+    );
+    assert!(
+        cortex_status_payload["event_type_counts"]["external_coding_agent.session_closed"]
+            .as_u64()
+            .map(|count| count >= 1)
+            .unwrap_or(false)
+    );
+
+    let status = client
+        .get(format!("http://{addr}{GATEWAY_STATUS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("gateway status response")
+        .json::<Value>()
+        .await
+        .expect("parse gateway status payload");
+    assert_eq!(
+        status["gateway"]["web_ui"]["cortex_status_endpoint"],
+        "/cortex/status"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2704_c03_c04_cortex_status_endpoint_rejects_unauthorized_and_returns_missing_state_fallback(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let unauthorized = client
+        .get("http://".to_string() + &addr.to_string() + "/cortex/status")
+        .send()
+        .await
+        .expect("unauthorized cortex status response");
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let authorized = client
+        .get("http://".to_string() + &addr.to_string() + "/cortex/status")
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("authorized cortex status response");
+    assert_eq!(authorized.status(), StatusCode::OK);
+    let authorized_payload = authorized
+        .json::<Value>()
+        .await
+        .expect("parse authorized cortex status payload");
+    assert_eq!(authorized_payload["state_present"], Value::Bool(false));
+    assert_eq!(
+        authorized_payload["total_events"],
+        Value::Number(0_u64.into())
+    );
+    assert!(authorized_payload["diagnostics"]
+        .as_array()
+        .map(|items| !items.is_empty())
+        .unwrap_or(false));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn regression_gateway_memory_graph_endpoint_rejects_unauthorized_requests() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 10_000, "secret");
