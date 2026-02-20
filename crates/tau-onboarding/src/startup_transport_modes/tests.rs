@@ -2005,6 +2005,8 @@ fn integration_build_multi_channel_live_connectors_config_preserves_runtime_fiel
     cli.multi_channel_discord_api_base = " https://discord.example ".to_string();
     cli.multi_channel_telegram_bot_token = Some(" telegram-direct ".to_string());
     cli.multi_channel_discord_ingress_channel_ids = vec![" 111 ".to_string(), "222".to_string()];
+    cli.multi_channel_discord_ingress_guild_ids =
+        vec![" guild-a ".to_string(), "guild-b".to_string()];
     cli.multi_channel_telegram_webhook_secret = Some(" tg-secret ".to_string());
     cli.multi_channel_whatsapp_webhook_verify_token = Some(" wa-verify-secret ".to_string());
     cli.multi_channel_whatsapp_webhook_app_secret = Some(" wa-app-secret ".to_string());
@@ -2037,6 +2039,7 @@ fn integration_build_multi_channel_live_connectors_config_preserves_runtime_fiel
     );
     assert_eq!(config.discord_bot_token.as_deref(), Some("discord-store"));
     assert_eq!(config.discord_ingress_channel_ids, vec!["111", "222"]);
+    assert_eq!(config.discord_ingress_guild_ids, vec!["guild-a", "guild-b"]);
     assert_eq!(config.telegram_webhook_secret.as_deref(), Some("tg-secret"));
     assert_eq!(
         config.whatsapp_webhook_verify_token.as_deref(),

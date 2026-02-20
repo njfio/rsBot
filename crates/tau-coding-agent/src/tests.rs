@@ -744,6 +744,7 @@ pub(crate) fn test_cli() -> Cli {
         multi_channel_discord_ingress_mode: CliMultiChannelLiveConnectorMode::Disabled,
         multi_channel_whatsapp_ingress_mode: CliMultiChannelLiveConnectorMode::Disabled,
         multi_channel_discord_ingress_channel_ids: vec![],
+        multi_channel_discord_ingress_guild_ids: vec![],
         multi_channel_telegram_webhook_secret: None,
         multi_channel_whatsapp_webhook_verify_token: None,
         multi_channel_whatsapp_webhook_app_secret: None,

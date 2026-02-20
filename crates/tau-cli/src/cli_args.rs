@@ -2461,6 +2461,15 @@ pub struct Cli {
     pub multi_channel_discord_ingress_channel_ids: Vec<String>,
 
     #[arg(
+        long = "multi-channel-discord-ingress-guild-id",
+        env = "TAU_MULTI_CHANNEL_DISCORD_INGRESS_GUILD_ID",
+        value_delimiter = ',',
+        requires = "multi_channel_live_connectors_runner",
+        help = "Optional Discord guild ids allowlisted for polling ingress; non-matching guild messages are ignored"
+    )]
+    pub multi_channel_discord_ingress_guild_ids: Vec<String>,
+
+    #[arg(
         long = "multi-channel-telegram-webhook-secret",
         env = "TAU_MULTI_CHANNEL_TELEGRAM_WEBHOOK_SECRET",
         hide_env_values = true,

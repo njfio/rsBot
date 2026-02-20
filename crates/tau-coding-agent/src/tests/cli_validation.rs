@@ -583,6 +583,7 @@ fn unit_cli_multi_channel_runner_flags_default_to_disabled() {
         CliMultiChannelLiveConnectorMode::Disabled
     );
     assert!(cli.multi_channel_discord_ingress_channel_ids.is_empty());
+    assert!(cli.multi_channel_discord_ingress_guild_ids.is_empty());
     assert!(cli.multi_channel_telegram_webhook_secret.is_none());
     assert!(cli.multi_channel_whatsapp_webhook_verify_token.is_none());
     assert!(cli.multi_channel_whatsapp_webhook_app_secret.is_none());
@@ -903,6 +904,8 @@ fn functional_cli_multi_channel_live_connectors_flags_accept_explicit_overrides(
         "webhook",
         "--multi-channel-discord-ingress-channel-id",
         "room-1,room-2",
+        "--multi-channel-discord-ingress-guild-id",
+        "guild-1,guild-2",
         "--multi-channel-telegram-webhook-secret",
         "telegram-secret",
         "--multi-channel-whatsapp-webhook-verify-token",
@@ -932,6 +935,10 @@ fn functional_cli_multi_channel_live_connectors_flags_accept_explicit_overrides(
     assert_eq!(
         cli.multi_channel_discord_ingress_channel_ids,
         vec!["room-1".to_string(), "room-2".to_string()]
+    );
+    assert_eq!(
+        cli.multi_channel_discord_ingress_guild_ids,
+        vec!["guild-1".to_string(), "guild-2".to_string()]
     );
     assert_eq!(
         cli.multi_channel_telegram_webhook_secret.as_deref(),

@@ -515,6 +515,14 @@ fn regression_validate_multi_channel_live_connectors_runner_cli_rejects_invalid_
         .contains("--multi-channel-discord-ingress-channel-id is required"));
 
     cli.multi_channel_discord_ingress_channel_ids = vec!["ops-room".to_string()];
+    cli.multi_channel_discord_ingress_guild_ids = vec!["   ".to_string()];
+    let discord_guild_ids_error = validate_multi_channel_live_connectors_runner_cli(&cli)
+        .expect_err("discord polling with blank guild ids should fail");
+    assert!(discord_guild_ids_error
+        .to_string()
+        .contains("--multi-channel-discord-ingress-guild-id cannot be empty"));
+
+    cli.multi_channel_discord_ingress_guild_ids = vec!["ops-guild".to_string()];
     cli.multi_channel_whatsapp_ingress_mode = CliMultiChannelLiveConnectorMode::Webhook;
     cli.multi_channel_live_connectors_poll_once = true;
     let poll_once_error = validate_multi_channel_live_connectors_runner_cli(&cli)

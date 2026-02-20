@@ -1263,6 +1263,13 @@ pub fn build_multi_channel_live_connectors_config(cli: &Cli) -> MultiChannelLive
             .multi_channel_discord_ingress_channel_ids
             .iter()
             .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .collect(),
+        discord_ingress_guild_ids: cli
+            .multi_channel_discord_ingress_guild_ids
+            .iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
             .collect(),
         whatsapp_mode: cli.multi_channel_whatsapp_ingress_mode.into(),
         whatsapp_webhook_verify_token: resolve_non_empty_cli_value(

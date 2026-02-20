@@ -502,6 +502,19 @@ pub fn validate_multi_channel_live_connectors_runner_cli(cli: &Cli) -> Result<()
             "--multi-channel-discord-ingress-channel-id is required when --multi-channel-discord-ingress-mode=polling"
         );
     }
+    let has_discord_guild_ids = !cli.multi_channel_discord_ingress_guild_ids.is_empty();
+    let has_non_empty_discord_guild_ids = cli
+        .multi_channel_discord_ingress_guild_ids
+        .iter()
+        .any(|value| !value.trim().is_empty());
+    if has_discord_guild_ids && !has_non_empty_discord_guild_ids {
+        bail!("--multi-channel-discord-ingress-guild-id cannot be empty");
+    }
+    if has_non_empty_discord_guild_ids && !discord_mode.is_polling() {
+        bail!(
+            "--multi-channel-discord-ingress-guild-id requires --multi-channel-discord-ingress-mode=polling"
+        );
+    }
     if telegram_mode.is_webhook() || whatsapp_mode.is_webhook() {
         tau_gateway::validate_gateway_openresponses_bind(&cli.multi_channel_live_webhook_bind)
             .with_context(|| {

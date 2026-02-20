@@ -231,6 +231,7 @@ pub struct MultiChannelLiveConnectorsConfig {
     pub discord_api_base: String,
     pub discord_bot_token: Option<String>,
     pub discord_ingress_channel_ids: Vec<String>,
+    pub discord_ingress_guild_ids: Vec<String>,
     pub whatsapp_mode: MultiChannelLiveConnectorMode,
     pub whatsapp_webhook_verify_token: Option<String>,
     pub whatsapp_webhook_app_secret: Option<String>,
@@ -744,6 +745,12 @@ async fn poll_discord_messages(
     if base.is_empty() {
         bail!("discord api base cannot be empty");
     }
+    let allowlisted_guild_ids = config
+        .discord_ingress_guild_ids
+        .iter()
+        .map(|value| value.trim())
+        .filter(|value| !value.is_empty())
+        .collect::<HashSet<_>>();
 
     let auth_header = format!("Bot {token}");
     for channel_id in &config.discord_ingress_channel_ids {
@@ -795,6 +802,16 @@ async fn poll_discord_messages(
             .cloned();
         let mut latest_seen = previous_id.clone().unwrap_or_default();
         for message in &messages {
+            if !allowlisted_guild_ids.is_empty() {
+                let guild_id = message
+                    .get("guild_id")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .unwrap_or_default();
+                if guild_id.is_empty() || !allowlisted_guild_ids.contains(guild_id) {
+                    continue;
+                }
+            }
             let message_id = message
                 .get("id")
                 .and_then(Value::as_str)
@@ -1337,6 +1354,7 @@ mod tests {
             discord_api_base: "https://discord.com/api/v10".to_string(),
             discord_bot_token: None,
             discord_ingress_channel_ids: Vec::new(),
+            discord_ingress_guild_ids: Vec::new(),
             whatsapp_mode: MultiChannelLiveConnectorMode::Disabled,
             whatsapp_webhook_verify_token: None,
             whatsapp_webhook_app_secret: None,
@@ -1612,6 +1630,65 @@ mod tests {
 
         telegram_mock.assert();
         discord_mock.assert();
+    }
+
+    #[tokio::test]
+    async fn functional_poll_cycle_filters_discord_events_by_allowlisted_guilds() {
+        let temp = tempdir().expect("tempdir");
+        let server = MockServer::start();
+        let discord_mock = server.mock(|when, then| {
+            when.method(GET)
+                .path("/channels/discord-room/messages")
+                .header("authorization", "Bot discord-token");
+            then.status(200).body(
+                json!([
+                    {
+                        "id":"1900000000000000001",
+                        "guild_id":"guild-allow",
+                        "channel_id":"discord-room",
+                        "content":"allow this",
+                        "timestamp":"2025-10-10T12:30:00Z",
+                        "author":{"id":"discord-user-1","username":"n"}
+                    },
+                    {
+                        "id":"1900000000000000002",
+                        "guild_id":"guild-deny",
+                        "channel_id":"discord-room",
+                        "content":"deny this",
+                        "timestamp":"2025-10-10T12:31:00Z",
+                        "author":{"id":"discord-user-2","username":"m"}
+                    },
+                    {
+                        "id":"1900000000000000003",
+                        "channel_id":"discord-room",
+                        "content":"missing guild should deny",
+                        "timestamp":"2025-10-10T12:32:00Z",
+                        "author":{"id":"discord-user-3","username":"k"}
+                    }
+                ])
+                .to_string(),
+            );
+        });
+
+        let mut config = build_connector_config(temp.path());
+        config.discord_mode = MultiChannelLiveConnectorMode::Polling;
+        config.discord_api_base = server.base_url();
+        config.discord_bot_token = Some("discord-token".to_string());
+        config.discord_ingress_channel_ids = vec!["discord-room".to_string()];
+        config.discord_ingress_guild_ids = vec!["guild-allow".to_string()];
+
+        run_multi_channel_live_connectors_runner(config.clone())
+            .await
+            .expect("poll cycle should succeed");
+
+        let discord_lines = read_ndjson(&config.ingress_dir.join("discord.ndjson"));
+        assert_eq!(discord_lines.len(), 1);
+        assert_eq!(discord_lines[0]["transport"].as_str(), Some("discord"));
+        assert_eq!(
+            discord_lines[0]["payload"]["guild_id"].as_str(),
+            Some("guild-allow")
+        );
+        discord_mock.assert_calls(1);
     }
 
     #[tokio::test]
