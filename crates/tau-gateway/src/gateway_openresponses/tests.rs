@@ -702,6 +702,8 @@ fn unit_render_gateway_webchat_page_includes_expected_endpoints() {
     assert!(html.contains(DASHBOARD_ALERTS_ENDPOINT));
     assert!(html.contains(DASHBOARD_ACTIONS_ENDPOINT));
     assert!(html.contains(DASHBOARD_STREAM_ENDPOINT));
+    assert!(html.contains(CORTEX_CHAT_ENDPOINT));
+    assert!(html.contains(CORTEX_STATUS_ENDPOINT));
     assert!(html.contains(GATEWAY_WS_ENDPOINT));
     assert!(html.contains(GATEWAY_MEMORY_GRAPH_ENDPOINT));
     assert!(html.contains(DEFAULT_SESSION_KEY));
@@ -727,6 +729,10 @@ fn unit_render_gateway_webchat_page_includes_expected_endpoints() {
     assert!(html.contains("id=\"reasonCodeTableBody\""));
     assert!(html.contains("id=\"memoryGraphCanvas\""));
     assert!(html.contains("id=\"loadMemoryGraph\""));
+    assert!(html.contains("id=\"view-cortex\""));
+    assert!(html.contains("id=\"cortexPrompt\""));
+    assert!(html.contains("id=\"cortexOutput\""));
+    assert!(html.contains("id=\"cortexStatus\""));
     assert!(html.contains("function relationColor(relationType)"));
     assert!(html.contains("function computeMemoryGraphForceLayout(nodes, edges, width, height)"));
     assert!(html.contains("const importanceSignal = Math.max(toSafeFloat(node.weight, 0)"));
@@ -734,6 +740,26 @@ fn unit_render_gateway_webchat_page_includes_expected_endpoints() {
     assert!(html.contains("renderStatusDashboard(payload)"));
     assert!(html.contains("multi_channel_lifecycle: state_present="));
     assert!(html.contains("connector_channels:"));
+}
+
+#[test]
+fn unit_spec_2730_c01_c02_c03_webchat_page_includes_cortex_admin_panel_and_stream_markers() {
+    let html = render_gateway_webchat_page();
+    assert!(html.contains("data-view=\"cortex\""));
+    assert!(html.contains("id=\"view-cortex\""));
+    assert!(html.contains("id=\"cortexPrompt\""));
+    assert!(html.contains("id=\"sendCortexPrompt\""));
+    assert!(html.contains("id=\"cortexOutput\""));
+    assert!(html.contains("id=\"cortexStatus\""));
+    assert!(html.contains(CORTEX_CHAT_ENDPOINT));
+    assert!(html.contains("async function sendCortexPrompt()"));
+    assert!(html.contains("fetch(CORTEX_CHAT_ENDPOINT"));
+    assert!(html.contains("await readSseBody(response, \"cortex\")"));
+    assert!(html.contains("cortex.response.created"));
+    assert!(html.contains("cortex.response.output_text.delta"));
+    assert!(html.contains("cortex.response.output_text.done"));
+    assert!(html.contains("cortex request failed: status="));
+    assert!(html.contains("cortex status failed:"));
 }
 
 #[tokio::test]
@@ -769,6 +795,11 @@ async fn functional_webchat_endpoint_returns_html_shell() {
     assert!(body.contains("Dashboard Alerts"));
     assert!(body.contains("Dashboard Queue Timeline"));
     assert!(body.contains("Dashboard Widgets"));
+    assert!(body.contains("Cortex"));
+    assert!(body.contains("id=\"view-cortex\""));
+    assert!(body.contains("id=\"cortexPrompt\""));
+    assert!(body.contains("id=\"cortexOutput\""));
+    assert!(body.contains("id=\"cortexStatus\""));
     assert!(body.contains("id=\"dashboardStatus\""));
     assert!(body.contains("id=\"dashboardLive\""));
     assert!(body.contains("id=\"dashboardActionReason\""));

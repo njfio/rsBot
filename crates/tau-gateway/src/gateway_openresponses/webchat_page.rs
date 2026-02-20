@@ -321,6 +321,7 @@ pub(super) fn render_gateway_webchat_page() -> String {
         <button class="tab active" data-view="conversation" role="tab" aria-selected="true">Conversation</button>
         <button class="tab" data-view="dashboard" role="tab" aria-selected="false">Dashboard</button>
         <button class="tab" data-view="tools" role="tab" aria-selected="false">Tools</button>
+        <button class="tab" data-view="cortex" role="tab" aria-selected="false">Cortex</button>
         <button class="tab" data-view="sessions" role="tab" aria-selected="false">Sessions</button>
         <button class="tab" data-view="memory" role="tab" aria-selected="false">Memory</button>
         <button class="tab" data-view="configuration" role="tab" aria-selected="false">Configuration</button>
@@ -514,6 +515,22 @@ pub(super) fn render_gateway_webchat_page() -> String {
         <pre id="dashboardStatus">Dashboard status will appear here.</pre>
       </section>
 
+      <section id="view-cortex" class="view" role="tabpanel" aria-hidden="true">
+        <p style="margin: 0 0 0.5rem 0; color: var(--ink-muted);">
+          Send authenticated admin prompts to Cortex observer runtime and inspect SSE stream frames.
+        </p>
+        <label for="cortexPrompt">Cortex prompt</label>
+        <textarea id="cortexPrompt" placeholder="Request a Cortex operations summary or observer insight..."></textarea>
+        <div class="actions">
+          <button id="sendCortexPrompt">Send Cortex prompt</button>
+          <button id="clearCortexOutput" class="secondary">Clear cortex output</button>
+        </div>
+        <h2 style="margin: 0.8rem 0 0.4rem 0; font-size: 1rem;">Cortex stream output</h2>
+        <pre id="cortexOutput">No cortex output yet.</pre>
+        <h2 style="margin: 0.8rem 0 0.4rem 0; font-size: 1rem;">Cortex status</h2>
+        <pre id="cortexStatus">Cortex status will appear here.</pre>
+      </section>
+
       <section id="view-sessions" class="view" role="tabpanel" aria-hidden="true">
         <div class="split">
           <div>
@@ -606,6 +623,8 @@ pub(super) fn render_gateway_webchat_page() -> String {
     const DASHBOARD_ALERTS_ENDPOINT = "{dashboard_alerts_endpoint}";
     const DASHBOARD_ACTIONS_ENDPOINT = "{dashboard_actions_endpoint}";
     const DASHBOARD_STREAM_ENDPOINT = "{dashboard_stream_endpoint}";
+    const CORTEX_CHAT_ENDPOINT = "{cortex_chat_endpoint}";
+    const CORTEX_STATUS_ENDPOINT = "{cortex_status_endpoint}";
     const WEBSOCKET_ENDPOINT = "{websocket_endpoint}";
     const SESSIONS_ENDPOINT = "{sessions_endpoint}";
     const MEMORY_ENDPOINT_TEMPLATE = "{memory_endpoint_template}";
@@ -646,6 +665,9 @@ pub(super) fn render_gateway_webchat_page() -> String {
     const dashboardWidgetsTableBody = document.getElementById("dashboardWidgetsTableBody");
     const dashboardAlertsTableBody = document.getElementById("dashboardAlertsTableBody");
     const dashboardTimelineTableBody = document.getElementById("dashboardTimelineTableBody");
+    const cortexPromptInput = document.getElementById("cortexPrompt");
+    const cortexOutputPre = document.getElementById("cortexOutput");
+    const cortexStatusPre = document.getElementById("cortexStatus");
     const sessionsList = document.getElementById("sessionsList");
     const sessionDetailPre = document.getElementById("sessionDetail");
     const appendRoleInput = document.getElementById("appendRole");
@@ -668,6 +690,8 @@ pub(super) fn render_gateway_webchat_page() -> String {
     const dashboardPauseButton = document.getElementById("dashboardPause");
     const dashboardResumeButton = document.getElementById("dashboardResume");
     const dashboardControlRefreshButton = document.getElementById("dashboardControlRefresh");
+    const sendCortexPromptButton = document.getElementById("sendCortexPrompt");
+    const clearCortexOutputButton = document.getElementById("clearCortexOutput");
     const loadSessionsButton = document.getElementById("loadSessions");
     const loadSessionDetailButton = document.getElementById("loadSessionDetail");
     const appendSessionButton = document.getElementById("appendSession");
@@ -712,6 +736,17 @@ pub(super) fn render_gateway_webchat_page() -> String {
         outputPre.textContent = "";
       }}
       outputPre.textContent += text;
+    }}
+
+    function setCortexOutput(text) {{
+      cortexOutputPre.textContent = text;
+    }}
+
+    function appendCortexOutput(text) {{
+      if (cortexOutputPre.textContent === "No cortex output yet.") {{
+        cortexOutputPre.textContent = "";
+      }}
+      cortexOutputPre.textContent += text;
     }}
 
     function currentSessionKey() {{
@@ -1217,6 +1252,8 @@ pub(super) fn render_gateway_webchat_page() -> String {
           dashboard_alerts: DASHBOARD_ALERTS_ENDPOINT,
           dashboard_actions: DASHBOARD_ACTIONS_ENDPOINT,
           dashboard_stream: DASHBOARD_STREAM_ENDPOINT,
+          cortex_chat: CORTEX_CHAT_ENDPOINT,
+          cortex_status: CORTEX_STATUS_ENDPOINT,
           sessions: SESSIONS_ENDPOINT,
           session_detail: SESSION_DETAIL_ENDPOINT_TEMPLATE,
           session_append: SESSION_APPEND_ENDPOINT_TEMPLATE,
@@ -1256,7 +1293,11 @@ pub(super) fn render_gateway_webchat_page() -> String {
         return;
       }}
       if (frame.data === "[DONE]") {{
-        appendOutput("\n");
+        if (mode === "cortex") {{
+          appendCortexOutput("\n");
+        }} else {{
+          appendOutput("\n");
+        }}
         return;
       }}
       if (!frame.data) {{
@@ -1267,7 +1308,33 @@ pub(super) fn render_gateway_webchat_page() -> String {
       try {{
         payload = JSON.parse(frame.data);
       }} catch (_error) {{
-        appendOutput("\n[invalid sse payload] " + frame.data + "\n");
+        if (mode === "cortex") {{
+          appendCortexOutput("\n[invalid sse payload] " + frame.data + "\n");
+        }} else {{
+          appendOutput("\n[invalid sse payload] " + frame.data + "\n");
+        }}
+        return;
+      }}
+
+      if (mode === "cortex") {{
+        if (frame.eventName === "cortex.response.created") {{
+          cortexStatusPre.textContent = "Cortex stream opened: response_id=" +
+            String(payload.response_id || "unknown");
+          return;
+        }}
+        if (frame.eventName === "cortex.response.output_text.delta") {{
+          appendCortexOutput(payload.delta || "");
+          return;
+        }}
+        if (frame.eventName === "cortex.response.output_text.done") {{
+          if (typeof payload.text === "string" && payload.text.length > 0) {{
+            setCortexOutput(payload.text);
+          }}
+          cortexStatusPre.textContent = "Cortex stream completed: response_id=" +
+            String(payload.response_id || "unknown");
+          return;
+        }}
+        appendCortexOutput("\n[unhandled cortex event] " + String(frame.eventName || "unknown") + "\n");
         return;
       }}
 
@@ -1399,6 +1466,72 @@ pub(super) fn render_gateway_webchat_page() -> String {
         await emitUiTelemetry("conversation", "send", "prompt_exception", {{ mode: mode }});
       }} finally {{
         sendButton.disabled = false;
+      }}
+    }}
+
+    async function refreshCortexStatus() {{
+      cortexStatusPre.textContent = "Loading cortex status...";
+      try {{
+        const response = await fetch(CORTEX_STATUS_ENDPOINT, {{ headers: authHeaders() }});
+        const raw = await response.text();
+        if (!response.ok) {{
+          cortexStatusPre.textContent = "cortex status failed: status=" + String(response.status) + "\n" + raw;
+          return;
+        }}
+        let payload = null;
+        try {{
+          payload = JSON.parse(raw);
+        }} catch (_error) {{
+          payload = {{ raw: raw }};
+        }}
+        const eventCount = toSafeInteger(payload.event_count);
+        const eventTypes = payload.event_type_counts
+          ? Object.keys(payload.event_type_counts).sort().join(",")
+          : "none";
+        cortexStatusPre.textContent = [
+          "cortex_status: events=" + String(eventCount) + " event_types=" + eventTypes,
+          "",
+          JSON.stringify(payload, null, 2)
+        ].join("\n");
+      }} catch (error) {{
+        cortexStatusPre.textContent = "cortex status failed: " + String(error);
+      }}
+    }}
+
+    async function sendCortexPrompt() {{
+      const prompt = cortexPromptInput.value.trim();
+      if (prompt.length === 0) {{
+        cortexStatusPre.textContent = "Cortex prompt is required.";
+        return;
+      }}
+
+      saveLocalValues();
+      sendCortexPromptButton.disabled = true;
+      setCortexOutput("");
+      cortexStatusPre.textContent = "Sending cortex prompt...";
+      try {{
+        const response = await fetch(CORTEX_CHAT_ENDPOINT, {{
+          method: "POST",
+          headers: Object.assign({{ "Content-Type": "application/json" }}, authHeaders()),
+          body: JSON.stringify({{ input: prompt }})
+        }});
+        if (!response.ok) {{
+          cortexStatusPre.textContent =
+            "cortex request failed: status=" + String(response.status) + "\n" + await response.text();
+          await emitUiTelemetry("cortex", "chat", "cortex_prompt_failed", {{ status: response.status }});
+          return;
+        }}
+
+        await readSseBody(response, "cortex");
+        await emitUiTelemetry("cortex", "chat", "cortex_prompt_completed", {{
+          prompt_chars: prompt.length
+        }});
+        await refreshCortexStatus();
+      }} catch (error) {{
+        cortexStatusPre.textContent = "cortex request failed: " + String(error);
+        await emitUiTelemetry("cortex", "chat", "cortex_prompt_exception", {{ reason: String(error) }});
+      }} finally {{
+        sendCortexPromptButton.disabled = false;
       }}
     }}
 
@@ -1791,6 +1924,8 @@ pub(super) fn render_gateway_webchat_page() -> String {
     dashboardPauseButton.addEventListener("click", () => postDashboardAction("pause"));
     dashboardResumeButton.addEventListener("click", () => postDashboardAction("resume"));
     dashboardControlRefreshButton.addEventListener("click", () => postDashboardAction("refresh"));
+    sendCortexPromptButton.addEventListener("click", sendCortexPrompt);
+    clearCortexOutputButton.addEventListener("click", () => setCortexOutput("No cortex output yet."));
     loadSessionsButton.addEventListener("click", loadSessions);
     loadSessionDetailButton.addEventListener("click", loadSessionDetail);
     appendSessionButton.addEventListener("click", appendSessionMessage);
@@ -1818,6 +1953,7 @@ pub(super) fn render_gateway_webchat_page() -> String {
     refreshStatus();
     refreshDashboard();
     updateDashboardLiveMode();
+    refreshCortexStatus();
     loadSessions();
     loadSessionDetail();
     loadMemory();
@@ -1837,6 +1973,8 @@ pub(super) fn render_gateway_webchat_page() -> String {
         dashboard_alerts_endpoint = DASHBOARD_ALERTS_ENDPOINT,
         dashboard_actions_endpoint = DASHBOARD_ACTIONS_ENDPOINT,
         dashboard_stream_endpoint = DASHBOARD_STREAM_ENDPOINT,
+        cortex_chat_endpoint = CORTEX_CHAT_ENDPOINT,
+        cortex_status_endpoint = CORTEX_STATUS_ENDPOINT,
         websocket_endpoint = GATEWAY_WS_ENDPOINT,
         sessions_endpoint = GATEWAY_SESSIONS_ENDPOINT,
         memory_endpoint_template = GATEWAY_MEMORY_ENDPOINT,
