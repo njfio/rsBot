@@ -1,12 +1,13 @@
 use super::{
     contains_markdown_contract_syntax, extract_assistant_stream_tokens,
     extract_first_fenced_code_block, render_tau_ops_dashboard_shell,
-    render_tau_ops_dashboard_shell_with_context, TauOpsDashboardAlertFeedRow,
-    TauOpsDashboardAuthMode, TauOpsDashboardChatMessageRow, TauOpsDashboardChatSessionOptionRow,
-    TauOpsDashboardChatSnapshot, TauOpsDashboardCommandCenterSnapshot,
-    TauOpsDashboardConnectorHealthRow, TauOpsDashboardRoute, TauOpsDashboardSessionGraphEdgeRow,
-    TauOpsDashboardSessionGraphNodeRow, TauOpsDashboardSessionTimelineRow,
-    TauOpsDashboardShellContext, TauOpsDashboardSidebarState, TauOpsDashboardTheme,
+    render_tau_ops_dashboard_shell_for_route, render_tau_ops_dashboard_shell_with_context,
+    TauOpsDashboardAlertFeedRow, TauOpsDashboardAuthMode, TauOpsDashboardChatMessageRow,
+    TauOpsDashboardChatSessionOptionRow, TauOpsDashboardChatSnapshot,
+    TauOpsDashboardCommandCenterSnapshot, TauOpsDashboardConnectorHealthRow, TauOpsDashboardRoute,
+    TauOpsDashboardSessionGraphEdgeRow, TauOpsDashboardSessionGraphNodeRow,
+    TauOpsDashboardSessionTimelineRow, TauOpsDashboardShellContext, TauOpsDashboardSidebarState,
+    TauOpsDashboardTheme,
 };
 
 #[test]
@@ -74,6 +75,48 @@ fn regression_render_shell_includes_prd_component_contract_markers() {
     assert!(html.contains("data-component=\"StatCard\""));
     assert!(html.contains("data-component=\"AlertFeed\""));
     assert!(html.contains("data-component=\"DataTable\""));
+}
+
+#[test]
+fn spec_c01_deploy_route_renders_wizard_root_and_steps() {
+    let html = render_tau_ops_dashboard_shell_for_route("/ops/deploy");
+    assert!(html.contains("id=\"tau-ops-deploy-panel\""));
+    assert!(html.contains("id=\"tau-ops-deploy-wizard-steps\""));
+    assert!(html.contains("data-wizard-step=\"model\""));
+    assert!(html.contains("data-wizard-step=\"review\""));
+    assert!(html.contains("aria-hidden=\"false\""));
+}
+
+#[test]
+fn spec_c02_deploy_route_renders_model_catalog_marker() {
+    let html = render_tau_ops_dashboard_shell_for_route("/ops/deploy");
+    assert!(html.contains("id=\"tau-ops-deploy-model-catalog\""));
+    assert!(html.contains("data-component=\"ModelCatalogDropdown\""));
+}
+
+#[test]
+fn spec_c03_deploy_route_renders_validation_and_review_markers() {
+    let html = render_tau_ops_dashboard_shell_for_route("/ops/deploy");
+    assert!(html.contains("id=\"tau-ops-deploy-validation\""));
+    assert!(html.contains("data-component=\"StepValidation\""));
+    assert!(html.contains("id=\"tau-ops-deploy-review\""));
+    assert!(html.contains("data-component=\"DeployReviewSummary\""));
+}
+
+#[test]
+fn spec_c04_deploy_route_renders_deploy_action_marker() {
+    let html = render_tau_ops_dashboard_shell_for_route("/ops/deploy");
+    assert!(html.contains("id=\"tau-ops-deploy-submit\""));
+    assert!(html.contains("data-action=\"deploy-agent\""));
+    assert!(html.contains("data-success-redirect-template=\"/ops/agents/{agent_id}\""));
+}
+
+#[test]
+fn spec_c05_non_deploy_route_hides_deploy_panel_markers() {
+    let html = render_tau_ops_dashboard_shell_for_route("/ops");
+    assert!(html.contains("id=\"tau-ops-deploy-panel\""));
+    assert!(html.contains("aria-hidden=\"true\""));
+    assert!(html.contains("data-panel-visible=\"false\""));
 }
 
 #[test]
