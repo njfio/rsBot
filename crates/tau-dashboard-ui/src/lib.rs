@@ -994,10 +994,19 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                     value=sidebar_state_attr
                                 />
                                 <label for="tau-ops-chat-input">Message</label>
+                                <p
+                                    id="tau-ops-chat-input-shortcut-hint"
+                                    data-shortcut-contract="shift-enter"
+                                >
+                                    Shift+Enter inserts a newline in the message editor.
+                                </p>
                                 <textarea
                                     id="tau-ops-chat-input"
                                     name="message"
                                     placeholder="Type a message for the active session"
+                                    rows="4"
+                                    data-multiline-enabled="true"
+                                    data-newline-shortcut="shift-enter"
                                 ></textarea>
                                 <button id="tau-ops-chat-send-button" type="submit">Send</button>
                             </form>
@@ -1766,6 +1775,28 @@ mod tests {
             "id=\"tau-ops-chat-new-sidebar\" type=\"hidden\" name=\"sidebar\" value=\"collapsed\""
         ));
         assert!(html.contains("id=\"tau-ops-chat-new-session-button\" type=\"submit\""));
+    }
+
+    #[test]
+    fn functional_spec_2881_c01_chat_route_renders_multiline_compose_contract_markers() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Chat,
+            theme: TauOpsDashboardTheme::Light,
+            sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot {
+                active_session_key: "chat-multiline".to_string(),
+                ..TauOpsDashboardChatSnapshot::default()
+            },
+        });
+
+        assert!(html.contains(
+            "id=\"tau-ops-chat-input\" name=\"message\" placeholder=\"Type a message for the active session\" rows=\"4\" data-multiline-enabled=\"true\" data-newline-shortcut=\"shift-enter\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-chat-input-shortcut-hint\" data-shortcut-contract=\"shift-enter\""
+        ));
     }
 
     #[test]
