@@ -1,0 +1,8 @@
+[package]
+name = "tau-dashboard-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+leptos.workspace = true
