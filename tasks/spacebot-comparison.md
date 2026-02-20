@@ -460,7 +460,7 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **What**: AES-256-GCM encrypted secret storage in redb, with `DecryptedSecret` wrapper that redacts in Debug/Display.
 **Why it matters**: API keys stored in plain text in config files is a security concern.
 **Pathway**:
-- [ ] Add `aes-gcm` and `redb` as dependencies (or use existing rusqlite)
+- [x] Add `aes-gcm` and `redb` as dependencies (or use existing rusqlite) (`#2774`)
 - [x] Create `SecretStore` trait in `tau-provider` or `tau-safety` (`#2652`)
 - [x] Encrypt secrets at rest with machine-derived key or user-provided passphrase (`#2652`)
 - [x] `DecryptedSecret` wrapper type that implements `Debug`/`Display` as `"[REDACTED]"` (`#2652`)
