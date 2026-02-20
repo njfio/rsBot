@@ -727,6 +727,7 @@ fn unit_render_gateway_webchat_page_includes_expected_endpoints() {
     assert!(html.contains("id=\"reasonCodeTableBody\""));
     assert!(html.contains("id=\"memoryGraphCanvas\""));
     assert!(html.contains("id=\"loadMemoryGraph\""));
+    assert!(html.contains("function relationColor(relationType)"));
     assert!(html.contains("function computeMemoryGraphForceLayout(nodes, edges, width, height)"));
     assert!(html.contains("const importanceSignal = Math.max(toSafeFloat(node.weight, 0)"));
     assert!(!html.contains("const orbit = Math.min(width, height) * 0.34;"));
