@@ -1,6 +1,6 @@
 # Spec: Issue #2838 - Sessions explorer deterministic row contracts
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Tau Ops already exposes `/ops/sessions` as a route token, but there is no dedicated sessions explorer surface with deterministic row-level SSR markers for discovered gateway sessions. Phase 1O requires explicit contracts so operators can inspect available sessions and navigate to chat with preserved shell controls.
