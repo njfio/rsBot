@@ -1314,6 +1314,126 @@ async fn integration_spec_2830_c02_c03_ops_chat_send_appends_message_and_renders
 }
 
 #[tokio::test]
+async fn functional_spec_2872_c01_ops_chat_shell_exposes_new_session_form_contract_markers() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/chat?theme=light&sidebar=collapsed&session=chat-c01"
+        ))
+        .send()
+        .await
+        .expect("ops chat request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops chat body");
+
+    assert!(body.contains(
+        "id=\"tau-ops-chat-new-session-form\" action=\"/ops/chat/new\" method=\"post\" data-active-session-key=\"chat-c01\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-chat-new-session-key\" type=\"text\" name=\"session_key\" value=\"\""
+    ));
+    assert!(body
+        .contains("id=\"tau-ops-chat-new-theme\" type=\"hidden\" name=\"theme\" value=\"light\""));
+    assert!(body.contains(
+        "id=\"tau-ops-chat-new-sidebar\" type=\"hidden\" name=\"sidebar\" value=\"collapsed\""
+    ));
+    assert!(body.contains("id=\"tau-ops-chat-new-session-button\" type=\"submit\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn integration_spec_2872_c02_c03_c04_ops_chat_new_session_creates_redirect_and_preserves_hidden_panel_contracts(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state.clone())
+        .await
+        .expect("spawn server");
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    let create_response = client
+        .post(format!("http://{addr}/ops/chat/new"))
+        .form(&[
+            ("session_key", "chat-created-session"),
+            ("theme", "light"),
+            ("sidebar", "collapsed"),
+        ])
+        .send()
+        .await
+        .expect("ops chat new-session request");
+    assert_eq!(create_response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        create_response
+            .headers()
+            .get("location")
+            .and_then(|value| value.to_str().ok()),
+        Some("/ops/chat?theme=light&sidebar=collapsed&session=chat-created-session")
+    );
+
+    let chat_response = client
+        .get(format!(
+            "http://{addr}/ops/chat?theme=light&sidebar=collapsed&session=chat-created-session"
+        ))
+        .send()
+        .await
+        .expect("ops chat render request");
+    assert_eq!(chat_response.status(), StatusCode::OK);
+    let chat_body = chat_response.text().await.expect("read ops chat body");
+    assert!(chat_body.contains(
+        "id=\"tau-ops-chat-session-selector\" data-active-session-key=\"chat-created-session\""
+    ));
+    assert!(chat_body.contains("data-session-key=\"chat-created-session\" data-selected=\"true\""));
+    assert!(chat_body.contains(
+        "id=\"tau-ops-chat-panel\" data-route=\"/ops/chat\" aria-hidden=\"false\" data-active-session-key=\"chat-created-session\" data-panel-visible=\"true\""
+    ));
+
+    let session_path = gateway_session_path(&state.config.state_dir, "chat-created-session");
+    let store = SessionStore::load(&session_path).expect("load created chat session");
+    let lineage = store
+        .lineage_messages(store.head_id())
+        .expect("lineage messages");
+    assert!(lineage
+        .iter()
+        .any(|message| message.role == MessageRole::System));
+
+    let ops_response = client
+        .get(format!(
+            "http://{addr}/ops?theme=light&sidebar=collapsed&session=chat-created-session"
+        ))
+        .send()
+        .await
+        .expect("ops shell request");
+    assert_eq!(ops_response.status(), StatusCode::OK);
+    let ops_body = ops_response.text().await.expect("read ops body");
+    assert!(ops_body.contains(
+        "id=\"tau-ops-chat-panel\" data-route=\"/ops/chat\" aria-hidden=\"true\" data-active-session-key=\"chat-created-session\" data-panel-visible=\"false\""
+    ));
+
+    let sessions_response = client
+        .get(format!(
+            "http://{addr}/ops/sessions?theme=light&sidebar=collapsed&session=chat-created-session"
+        ))
+        .send()
+        .await
+        .expect("ops sessions shell request");
+    assert_eq!(sessions_response.status(), StatusCode::OK);
+    let sessions_body = sessions_response.text().await.expect("read sessions body");
+    assert!(sessions_body.contains(
+        "id=\"tau-ops-chat-panel\" data-route=\"/ops/chat\" aria-hidden=\"true\" data-active-session-key=\"chat-created-session\" data-panel-visible=\"false\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2862_c01_c02_c03_ops_chat_shell_exposes_token_counter_marker_contract() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");

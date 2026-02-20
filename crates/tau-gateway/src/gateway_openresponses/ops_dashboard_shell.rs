@@ -18,7 +18,7 @@ use super::{
     collect_tau_ops_dashboard_command_center_snapshot, gateway_session_path,
     record_cortex_session_append_event, sanitize_session_key, GatewayOpenResponsesServerState,
     OpenResponsesApiError, OpsShellControlsQuery, DEFAULT_SESSION_KEY, OPS_DASHBOARD_CHAT_ENDPOINT,
-    OPS_DASHBOARD_CHAT_SEND_ENDPOINT,
+    OPS_DASHBOARD_CHAT_NEW_ENDPOINT, OPS_DASHBOARD_CHAT_SEND_ENDPOINT,
 };
 use crate::remote_profile::GatewayOpenResponsesAuthMode;
 
@@ -44,6 +44,20 @@ pub(super) struct OpsDashboardChatSendForm {
     sidebar: String,
 }
 
+fn resolve_chat_theme(theme: &str) -> TauOpsDashboardTheme {
+    match theme.trim() {
+        "light" => TauOpsDashboardTheme::Light,
+        _ => TauOpsDashboardTheme::Dark,
+    }
+}
+
+fn resolve_chat_sidebar_state(sidebar: &str) -> TauOpsDashboardSidebarState {
+    match sidebar.trim() {
+        "collapsed" => TauOpsDashboardSidebarState::Collapsed,
+        _ => TauOpsDashboardSidebarState::Expanded,
+    }
+}
+
 impl OpsDashboardChatSendForm {
     fn resolved_session_key(&self) -> String {
         let requested = self.session_key.trim();
@@ -56,17 +70,41 @@ impl OpsDashboardChatSendForm {
     }
 
     fn resolved_theme(&self) -> TauOpsDashboardTheme {
-        match self.theme.trim() {
-            "light" => TauOpsDashboardTheme::Light,
-            _ => TauOpsDashboardTheme::Dark,
-        }
+        resolve_chat_theme(self.theme.as_str())
     }
 
     fn resolved_sidebar_state(&self) -> TauOpsDashboardSidebarState {
-        match self.sidebar.trim() {
-            "collapsed" => TauOpsDashboardSidebarState::Collapsed,
-            _ => TauOpsDashboardSidebarState::Expanded,
-        }
+        resolve_chat_sidebar_state(self.sidebar.as_str())
+    }
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct OpsDashboardChatNewSessionForm {
+    #[serde(default)]
+    session_key: String,
+    #[serde(default)]
+    theme: String,
+    #[serde(default)]
+    sidebar: String,
+}
+
+impl OpsDashboardChatNewSessionForm {
+    fn resolved_session_key(&self) -> String {
+        let requested = self.session_key.trim();
+        let resolved = if requested.is_empty() {
+            DEFAULT_SESSION_KEY
+        } else {
+            requested
+        };
+        sanitize_session_key(resolved)
+    }
+
+    fn resolved_theme(&self) -> TauOpsDashboardTheme {
+        resolve_chat_theme(self.theme.as_str())
+    }
+
+    fn resolved_sidebar_state(&self) -> TauOpsDashboardSidebarState {
+        resolve_chat_sidebar_state(self.sidebar.as_str())
     }
 }
 
@@ -215,6 +253,8 @@ fn collect_tau_ops_dashboard_chat_snapshot(
 
     TauOpsDashboardChatSnapshot {
         active_session_key: active_session_key.clone(),
+        new_session_form_action: OPS_DASHBOARD_CHAT_NEW_ENDPOINT.to_string(),
+        new_session_form_method: "post".to_string(),
         send_form_action: OPS_DASHBOARD_CHAT_SEND_ENDPOINT.to_string(),
         send_form_method: "post".to_string(),
         session_options,
@@ -257,6 +297,46 @@ pub(super) fn render_tau_ops_dashboard_shell_for_route(
             chat,
         },
     ))
+}
+
+pub(super) async fn handle_ops_dashboard_chat_new(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    Form(form): Form<OpsDashboardChatNewSessionForm>,
+) -> Response {
+    let session_key = form.resolved_session_key();
+    let redirect_path = build_ops_chat_redirect_path(
+        form.resolved_theme(),
+        form.resolved_sidebar_state(),
+        session_key.as_str(),
+    );
+
+    let session_path = gateway_session_path(&state.config.state_dir, session_key.as_str());
+    let mut store = match SessionStore::load(&session_path) {
+        Ok(store) => store,
+        Err(error) => {
+            return OpenResponsesApiError::internal(format!(
+                "failed to load session '{}': {error}",
+                session_path.display()
+            ))
+            .into_response();
+        }
+    };
+    store.set_lock_policy(
+        state.config.session_lock_wait_ms,
+        state.config.session_lock_stale_ms,
+    );
+
+    let resolved_system_prompt = state.resolved_system_prompt();
+    if let Err(error) = store.ensure_initialized(&resolved_system_prompt) {
+        return OpenResponsesApiError::internal(format!(
+            "failed to initialize session '{}': {error}",
+            session_path.display()
+        ))
+        .into_response();
+    }
+
+    state.record_ui_telemetry_event("chat", "new-session", "chat_session_initialized");
+    Redirect::to(redirect_path.as_str()).into_response()
 }
 
 pub(super) async fn handle_ops_dashboard_chat_send(

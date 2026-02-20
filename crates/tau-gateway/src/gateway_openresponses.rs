@@ -108,8 +108,8 @@ use openai_compat::{
     OpenAiChatCompletionsRequest, OpenAiCompletionsRequest,
 };
 use ops_dashboard_shell::{
-    handle_ops_dashboard_chat_send, render_tau_ops_dashboard_shell_for_route,
-    resolve_tau_ops_dashboard_auth_mode,
+    handle_ops_dashboard_chat_new, handle_ops_dashboard_chat_send,
+    render_tau_ops_dashboard_shell_for_route, resolve_tau_ops_dashboard_auth_mode,
 };
 use ops_shell_controls::OpsShellControlsQuery;
 use request_translation::{sanitize_session_key, translate_openresponses_request};
@@ -149,6 +149,7 @@ const OPS_DASHBOARD_ENDPOINT: &str = "/ops";
 const OPS_DASHBOARD_AGENTS_ENDPOINT: &str = "/ops/agents";
 const OPS_DASHBOARD_AGENT_DETAIL_ENDPOINT: &str = "/ops/agents/{agent_id}";
 const OPS_DASHBOARD_CHAT_ENDPOINT: &str = "/ops/chat";
+const OPS_DASHBOARD_CHAT_NEW_ENDPOINT: &str = "/ops/chat/new";
 const OPS_DASHBOARD_CHAT_SEND_ENDPOINT: &str = "/ops/chat/send";
 const OPS_DASHBOARD_SESSIONS_ENDPOINT: &str = "/ops/sessions";
 const OPS_DASHBOARD_SESSION_DETAIL_ENDPOINT: &str = "/ops/sessions/{session_key}";
@@ -959,6 +960,10 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
         .route(
             OPS_DASHBOARD_CHAT_ENDPOINT,
             get(handle_ops_dashboard_chat_shell_page),
+        )
+        .route(
+            OPS_DASHBOARD_CHAT_NEW_ENDPOINT,
+            post(handle_ops_dashboard_chat_new),
         )
         .route(
             OPS_DASHBOARD_CHAT_SEND_ENDPOINT,
