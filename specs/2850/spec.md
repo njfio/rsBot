@@ -1,6 +1,6 @@
 # Spec: Issue #2850 - command-center recent-cycles table contracts
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Tau Ops command-center renders a "Recent Cycles" table, but current SSR markup does not expose deterministic row-level attributes for verification and does not expose explicit empty-state marker semantics when timeline data is absent. Operators cannot reliably validate table values from shell contracts.
