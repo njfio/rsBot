@@ -1,6 +1,6 @@
 # Spec: Issue #2730 - G18 stretch Cortex admin chat webchat panel
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 Tau ships authenticated Cortex admin endpoints, but operators still need manual API tooling to use them. G18 stretch parity requires a Cortex admin chat surface directly in gateway webchat so runtime observer interactions are available in the operational UI.
