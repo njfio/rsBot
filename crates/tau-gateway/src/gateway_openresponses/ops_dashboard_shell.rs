@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use axum::extract::{Form, State};
@@ -6,8 +7,9 @@ use serde::Deserialize;
 use tau_ai::{Message, MessageRole};
 use tau_dashboard_ui::{
     render_tau_ops_dashboard_shell_with_context, TauOpsDashboardAuthMode,
-    TauOpsDashboardChatMessageRow, TauOpsDashboardChatSnapshot, TauOpsDashboardRoute,
-    TauOpsDashboardShellContext, TauOpsDashboardSidebarState, TauOpsDashboardTheme,
+    TauOpsDashboardChatMessageRow, TauOpsDashboardChatSessionOptionRow,
+    TauOpsDashboardChatSnapshot, TauOpsDashboardRoute, TauOpsDashboardShellContext,
+    TauOpsDashboardSidebarState, TauOpsDashboardTheme,
 };
 use tau_session::SessionStore;
 
@@ -74,6 +76,46 @@ fn resolve_ops_chat_session_key(controls: &OpsShellControlsQuery) -> String {
     sanitize_session_key(requested)
 }
 
+fn collect_ops_chat_session_option_rows(
+    state: &Arc<GatewayOpenResponsesServerState>,
+    active_session_key: &str,
+) -> Vec<TauOpsDashboardChatSessionOptionRow> {
+    let mut session_keys = BTreeSet::new();
+    session_keys.insert(sanitize_session_key(active_session_key));
+
+    let sessions_root = state
+        .config
+        .state_dir
+        .join("openresponses")
+        .join("sessions");
+    if sessions_root.is_dir() {
+        if let Ok(dir_entries) = std::fs::read_dir(&sessions_root) {
+            for dir_entry in dir_entries.flatten() {
+                let path = dir_entry.path();
+                if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+                    continue;
+                }
+                let Some(file_stem) = path.file_stem().and_then(|value| value.to_str()) else {
+                    continue;
+                };
+                let session_key = sanitize_session_key(file_stem);
+                if session_key.is_empty() {
+                    continue;
+                }
+                session_keys.insert(session_key);
+            }
+        }
+    }
+
+    session_keys
+        .into_iter()
+        .map(|session_key| TauOpsDashboardChatSessionOptionRow {
+            selected: session_key == active_session_key,
+            session_key,
+        })
+        .collect()
+}
+
 fn build_ops_chat_redirect_path(
     theme: TauOpsDashboardTheme,
     sidebar_state: TauOpsDashboardSidebarState,
@@ -100,6 +142,7 @@ fn collect_tau_ops_dashboard_chat_snapshot(
     controls: &OpsShellControlsQuery,
 ) -> TauOpsDashboardChatSnapshot {
     let active_session_key = resolve_ops_chat_session_key(controls);
+    let session_options = collect_ops_chat_session_option_rows(state, active_session_key.as_str());
     let session_path = gateway_session_path(&state.config.state_dir, active_session_key.as_str());
     let mut message_rows = Vec::new();
 
@@ -125,6 +168,7 @@ fn collect_tau_ops_dashboard_chat_snapshot(
         active_session_key,
         send_form_action: OPS_DASHBOARD_CHAT_SEND_ENDPOINT.to_string(),
         send_form_method: "post".to_string(),
+        session_options,
         message_rows,
     }
 }

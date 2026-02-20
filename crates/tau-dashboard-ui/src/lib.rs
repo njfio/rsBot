@@ -219,11 +219,19 @@ pub struct TauOpsDashboardChatMessageRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TauOpsDashboardChatSessionOptionRow` in `tau-dashboard-ui`.
+pub struct TauOpsDashboardChatSessionOptionRow {
+    pub session_key: String,
+    pub selected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Public struct `TauOpsDashboardChatSnapshot` in `tau-dashboard-ui`.
 pub struct TauOpsDashboardChatSnapshot {
     pub active_session_key: String,
     pub send_form_action: String,
     pub send_form_method: String,
+    pub session_options: Vec<TauOpsDashboardChatSessionOptionRow>,
     pub message_rows: Vec<TauOpsDashboardChatMessageRow>,
 }
 
@@ -233,6 +241,10 @@ impl Default for TauOpsDashboardChatSnapshot {
             active_session_key: "default".to_string(),
             send_form_action: "/ops/chat/send".to_string(),
             send_form_method: "post".to_string(),
+            session_options: vec![TauOpsDashboardChatSessionOptionRow {
+                session_key: "default".to_string(),
+                selected: true,
+            }],
             message_rows: vec![],
         }
     }
@@ -392,8 +404,23 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     } else {
         context.chat.message_rows.clone()
     };
-    let chat_message_count_value = chat_message_rows.len().to_string();
     let chat_session_key = context.chat.active_session_key.clone();
+    let mut chat_session_options = context.chat.session_options.clone();
+    let mut active_session_marked = false;
+    for option in &mut chat_session_options {
+        if option.session_key == chat_session_key {
+            option.selected = true;
+            active_session_marked = true;
+        }
+    }
+    if !active_session_marked {
+        chat_session_options.push(TauOpsDashboardChatSessionOptionRow {
+            session_key: chat_session_key.clone(),
+            selected: true,
+        });
+    }
+    let chat_session_option_count_value = chat_session_options.len().to_string();
+    let chat_message_count_value = chat_message_rows.len().to_string();
     let chat_send_form_action = context.chat.send_form_action.clone();
     let chat_send_form_method = context.chat.send_form_method.clone();
     let health_state = context.command_center.health_state.clone();
@@ -610,6 +637,45 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                             data-active-session-key=chat_session_key.clone()
                         >
                             <h2>Conversation / Chat</h2>
+                            <section
+                                id="tau-ops-chat-session-selector"
+                                data-active-session-key=chat_session_key.clone()
+                                data-option-count=chat_session_option_count_value
+                            >
+                                <ul id="tau-ops-chat-session-options">
+                                    {chat_session_options
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(index, session_option)| {
+                                            let session_option_row_id =
+                                                format!("tau-ops-chat-session-option-{index}");
+                                            let selected_attr = if session_option.selected {
+                                                "true"
+                                            } else {
+                                                "false"
+                                            };
+                                            let session_href = format!(
+                                                "/ops/chat?theme={theme_attr}&sidebar={sidebar_state_attr}&session={}",
+                                                session_option.session_key
+                                            );
+                                            view! {
+                                                <li
+                                                    id=session_option_row_id
+                                                    data-session-key=session_option.session_key.clone()
+                                                    data-selected=selected_attr
+                                                >
+                                                    <a
+                                                        data-session-link=session_option.session_key.clone()
+                                                        href=session_href
+                                                    >
+                                                        {session_option.session_key.clone()}
+                                                    </a>
+                                                </li>
+                                            }
+                                        })
+                                        .collect_view()}
+                                </ul>
+                            </section>
                             <form
                                 id="tau-ops-chat-send-form"
                                 action=chat_send_form_action
@@ -900,9 +966,10 @@ mod tests {
     use super::{
         render_tau_ops_dashboard_shell, render_tau_ops_dashboard_shell_with_context,
         TauOpsDashboardAlertFeedRow, TauOpsDashboardAuthMode, TauOpsDashboardChatMessageRow,
-        TauOpsDashboardChatSnapshot, TauOpsDashboardCommandCenterSnapshot,
-        TauOpsDashboardConnectorHealthRow, TauOpsDashboardRoute, TauOpsDashboardShellContext,
-        TauOpsDashboardSidebarState, TauOpsDashboardTheme,
+        TauOpsDashboardChatSessionOptionRow, TauOpsDashboardChatSnapshot,
+        TauOpsDashboardCommandCenterSnapshot, TauOpsDashboardConnectorHealthRow,
+        TauOpsDashboardRoute, TauOpsDashboardShellContext, TauOpsDashboardSidebarState,
+        TauOpsDashboardTheme,
     };
 
     #[test]
@@ -1150,6 +1217,7 @@ mod tests {
                 active_session_key: "session-42".to_string(),
                 send_form_action: "/ops/chat/send".to_string(),
                 send_form_method: "post".to_string(),
+                session_options: vec![],
                 message_rows: vec![
                     TauOpsDashboardChatMessageRow {
                         role: "user".to_string(),
@@ -1175,6 +1243,101 @@ mod tests {
         assert!(html.contains("id=\"tau-ops-chat-message-row-1\" data-message-role=\"assistant\""));
         assert!(html.contains("first message"));
         assert!(html.contains("second message"));
+    }
+
+    #[test]
+    fn functional_spec_2834_c01_chat_route_renders_session_selector_markers() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Chat,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot::default(),
+        });
+
+        assert!(html.contains(
+            "id=\"tau-ops-chat-session-selector\" data-active-session-key=\"default\" data-option-count=\"1\""
+        ));
+        assert!(html.contains("id=\"tau-ops-chat-session-options\""));
+        assert!(
+            html.contains(
+                "id=\"tau-ops-chat-session-option-0\" data-session-key=\"default\" data-selected=\"true\""
+            )
+        );
+        assert!(html.contains("data-session-link=\"default\""));
+        assert!(
+            html.contains("href=\"/ops/chat?theme=dark&amp;sidebar=expanded&amp;session=default\"")
+        );
+    }
+
+    #[test]
+    fn functional_spec_2834_c02_chat_route_keeps_active_session_selected_in_selector_markers() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Chat,
+            theme: TauOpsDashboardTheme::Light,
+            sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot {
+                active_session_key: "session-beta".to_string(),
+                send_form_action: "/ops/chat/send".to_string(),
+                send_form_method: "post".to_string(),
+                session_options: vec![],
+                message_rows: vec![TauOpsDashboardChatMessageRow {
+                    role: "user".to_string(),
+                    content: "chat from beta".to_string(),
+                }],
+            },
+        });
+
+        assert!(html.contains(
+            "id=\"tau-ops-chat-session-selector\" data-active-session-key=\"session-beta\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-chat-session-option-0\" data-session-key=\"session-beta\" data-selected=\"true\""
+        ));
+        assert!(html.contains(
+            "href=\"/ops/chat?theme=light&amp;sidebar=collapsed&amp;session=session-beta\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-chat-session-key\" type=\"hidden\" name=\"session_key\" value=\"session-beta\""
+        ));
+        assert!(html.contains("chat from beta"));
+    }
+
+    #[test]
+    fn functional_spec_2834_c03_chat_route_adds_missing_active_session_option_marker() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Chat,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot {
+                active_session_key: "session-zeta".to_string(),
+                send_form_action: "/ops/chat/send".to_string(),
+                send_form_method: "post".to_string(),
+                session_options: vec![TauOpsDashboardChatSessionOptionRow {
+                    session_key: "session-alpha".to_string(),
+                    selected: false,
+                }],
+                message_rows: vec![TauOpsDashboardChatMessageRow {
+                    role: "user".to_string(),
+                    content: "zeta transcript".to_string(),
+                }],
+            },
+        });
+
+        assert!(html.contains(
+            "id=\"tau-ops-chat-session-selector\" data-active-session-key=\"session-zeta\" data-option-count=\"2\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-chat-session-option-0\" data-session-key=\"session-alpha\" data-selected=\"false\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-chat-session-option-1\" data-session-key=\"session-zeta\" data-selected=\"true\""
+        ));
     }
 
     #[test]
