@@ -12,6 +12,10 @@ This runbook covers:
 - gateway-served webchat/control endpoints (`/webchat`, `/gateway/status`)
 - optional OpenTelemetry-compatible JSON export (`--otel-export-log`)
 
+Canonical promotion gate procedure:
+
+- `docs/guides/ops-readiness-live-validation.md`
+
 ## Service lifecycle commands
 
 Start service mode (persists lifecycle posture):

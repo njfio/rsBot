@@ -7,6 +7,10 @@ Run all commands from repository root.
 This runbook covers the fixture-driven deployment runtime (`--deployment-contract-runner`) for
 cloud and WASM rollout validation.
 
+Canonical promotion gate procedure:
+
+- `docs/guides/ops-readiness-live-validation.md`
+
 ## Fly.io gateway deployment baseline
 
 Repository default manifest: `fly.toml` (repo root).

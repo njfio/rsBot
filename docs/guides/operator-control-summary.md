@@ -11,6 +11,10 @@ Run from repository root.
 - daemon lifecycle state
 - release-channel state
 
+Canonical promotion gate procedure:
+
+- `docs/guides/ops-readiness-live-validation.md`
+
 ## Commands
 
 Text summary:

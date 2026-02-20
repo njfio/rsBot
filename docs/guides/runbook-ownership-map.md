@@ -13,6 +13,7 @@ Use this map when triaging drift between documentation and runtime behavior.
 | `docs/guides/transports.md` | `crates/tau-coding-agent`, `crates/tau-github-issues-runtime`, `crates/tau-slack-runtime`, `crates/tau-multi-channel`, `crates/tau-gateway`, `crates/tau-memory` | Transport entrypoints and per-surface runtime ownership map. |
 | `docs/guides/memory-ops.md` | `crates/tau-agent-core`, `crates/tau-memory`, `crates/tau-tools`, `crates/tau-coding-agent` | Runtime memory behavior is owned by `tau-agent-core`; `tau-memory` owns shared storage helpers/contracts. |
 | `docs/guides/dashboard-ops.md` | `crates/tau-dashboard`, `crates/tau-gateway`, `crates/tau-coding-agent` | Dashboard diagnostics, API/SSE surfaces, and CLI control-plane ownership boundaries. |
+| `docs/guides/ops-readiness-live-validation.md` | `scripts/dev/operator-readiness-live-check.sh`, `crates/tau-coding-agent`, `crates/tau-gateway`, `crates/tau-deployment` | Canonical promotion gate procedure and fail-closed readiness validation command ownership. |
 | `docs/guides/custom-command-ops.md` | `crates/tau-custom-command`, `crates/tau-coding-agent`, `crates/tau-tools` | Custom-command diagnostics and preserved state ownership boundaries after contract-runner removal. |
 | `docs/guides/consolidated-runtime-rollback-drill.md` | `scripts/demo/rollback-drill-checklist.sh`, `scripts/dev/m21-retained-capability-proof-summary.sh`, `docs/guides/runbook-ownership-map.md` | Rollback trigger contract + artifact capture drill for consolidated runtime surfaces. |
 
