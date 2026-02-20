@@ -9,15 +9,6 @@
       "approved_by": "codex",
       "approved_at": "2026-02-20",
       "expires_on": "2026-03-31"
-    },
-    {
-      "path": "crates/tau-dashboard-ui/src/lib.rs",
-      "threshold_lines": 4300,
-      "owner_issue": 2923,
-      "rationale": "Memory route contract delivery is complete for issue 2921 while a focused module split is tracked in issue 2923.",
-      "approved_by": "codex",
-      "approved_at": "2026-02-20",
-      "expires_on": "2026-03-31"
     }
   ]
 }
