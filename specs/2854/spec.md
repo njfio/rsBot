@@ -1,6 +1,6 @@
 # Spec: Issue #2854 - command-center route visibility contracts
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Tau Ops renders command-center content with deterministic contract markers, but command-center panel visibility is not route-gated. On non-command-center routes, operators cannot deterministically validate that command-center surface is intentionally hidden.
