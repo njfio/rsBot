@@ -1,6 +1,6 @@
 # Spec: Issue #2842 - /ops/sessions/{session_key} detail timeline/validation/usage contracts
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Tau Ops currently exposes deterministic `/ops/sessions` list contracts, but does not expose a deterministic detail contract surface for a selected session key. Operators cannot verify per-session timeline contents, validation integrity, or usage summary directly from SSR markers at `/ops/sessions/{session_key}`.
