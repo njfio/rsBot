@@ -1,5 +1,6 @@
 //! Dashboard backend status and control helpers for gateway API surfaces.
 use super::*;
+use tau_dashboard_ui::TauOpsDashboardCommandCenterSnapshot;
 
 const DASHBOARD_SCHEMA_VERSION: u32 = 1;
 const DASHBOARD_STATE_FILE: &str = "state.json";
@@ -515,6 +516,35 @@ pub(super) fn collect_gateway_dashboard_snapshot(
                 .and_then(|state| state.last_action)
                 .or(action_log_summary.last_action),
         },
+    }
+}
+
+pub(super) fn collect_tau_ops_dashboard_command_center_snapshot(
+    gateway_state_dir: &Path,
+) -> TauOpsDashboardCommandCenterSnapshot {
+    let snapshot = collect_gateway_dashboard_snapshot(gateway_state_dir);
+    let alert_count = snapshot.alerts.len();
+    let primary_alert = snapshot.alerts.first();
+
+    TauOpsDashboardCommandCenterSnapshot {
+        health_state: snapshot.health.health_state,
+        health_reason: snapshot.health.health_reason,
+        queue_depth: snapshot.health.queue_depth,
+        failure_streak: snapshot.health.failure_streak,
+        processed_case_count: snapshot.health.processed_case_count,
+        alert_count,
+        widget_count: snapshot.widgets.len(),
+        timeline_cycle_count: snapshot.queue_timeline.cycle_reports,
+        timeline_invalid_cycle_count: snapshot.queue_timeline.invalid_cycle_reports,
+        primary_alert_code: primary_alert
+            .map(|alert| alert.code.clone())
+            .unwrap_or_else(|| "none".to_string()),
+        primary_alert_severity: primary_alert
+            .map(|alert| alert.severity.clone())
+            .unwrap_or_else(|| "info".to_string()),
+        primary_alert_message: primary_alert
+            .map(|alert| alert.message.clone())
+            .unwrap_or_else(|| "No alerts loaded".to_string()),
     }
 }
 
@@ -1077,5 +1107,32 @@ invalid-json-line
         .expect_err("invalid action should fail");
         assert_eq!(error.status, StatusCode::BAD_REQUEST);
         assert_eq!(error.code, "invalid_dashboard_action");
+    }
+
+    #[test]
+    fn functional_collect_tau_ops_dashboard_command_center_snapshot_maps_dashboard_snapshot() {
+        let temp = tempdir().expect("tempdir");
+        write_dashboard_state(temp.path());
+        let gateway_root = temp.path().join(".tau").join("gateway");
+        std::fs::create_dir_all(&gateway_root).expect("create gateway root");
+
+        let snapshot = collect_tau_ops_dashboard_command_center_snapshot(&gateway_root);
+        assert_eq!(snapshot.health_state, "healthy");
+        assert_eq!(
+            snapshot.health_reason,
+            "no recent transport failures observed"
+        );
+        assert_eq!(snapshot.queue_depth, 0);
+        assert_eq!(snapshot.failure_streak, 0);
+        assert_eq!(snapshot.processed_case_count, 2);
+        assert_eq!(snapshot.widget_count, 1);
+        assert_eq!(snapshot.timeline_cycle_count, 1);
+        assert_eq!(snapshot.timeline_invalid_cycle_count, 1);
+        assert_eq!(snapshot.alert_count, 2);
+        assert_eq!(
+            snapshot.primary_alert_code,
+            "dashboard_cycle_log_invalid_lines"
+        );
+        assert_eq!(snapshot.primary_alert_severity, "warning");
     }
 }

@@ -193,13 +193,50 @@ impl TauOpsDashboardSidebarState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TauOpsDashboardCommandCenterSnapshot` in `tau-dashboard-ui`.
+pub struct TauOpsDashboardCommandCenterSnapshot {
+    pub health_state: String,
+    pub health_reason: String,
+    pub queue_depth: usize,
+    pub failure_streak: usize,
+    pub processed_case_count: usize,
+    pub alert_count: usize,
+    pub widget_count: usize,
+    pub timeline_cycle_count: usize,
+    pub timeline_invalid_cycle_count: usize,
+    pub primary_alert_code: String,
+    pub primary_alert_severity: String,
+    pub primary_alert_message: String,
+}
+
+impl Default for TauOpsDashboardCommandCenterSnapshot {
+    fn default() -> Self {
+        Self {
+            health_state: "unknown".to_string(),
+            health_reason: "dashboard snapshot unavailable".to_string(),
+            queue_depth: 0,
+            failure_streak: 0,
+            processed_case_count: 0,
+            alert_count: 0,
+            widget_count: 0,
+            timeline_cycle_count: 0,
+            timeline_invalid_cycle_count: 0,
+            primary_alert_code: "none".to_string(),
+            primary_alert_severity: "info".to_string(),
+            primary_alert_message: "No alerts loaded".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Public struct `TauOpsDashboardShellContext` in `tau-dashboard-ui`.
 pub struct TauOpsDashboardShellContext {
     pub auth_mode: TauOpsDashboardAuthMode,
     pub active_route: TauOpsDashboardRoute,
     pub theme: TauOpsDashboardTheme,
     pub sidebar_state: TauOpsDashboardSidebarState,
+    pub command_center: TauOpsDashboardCommandCenterSnapshot,
 }
 
 impl Default for TauOpsDashboardShellContext {
@@ -209,6 +246,7 @@ impl Default for TauOpsDashboardShellContext {
             active_route: TauOpsDashboardRoute::Ops,
             theme: TauOpsDashboardTheme::Dark,
             sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
         }
     }
 }
@@ -254,6 +292,23 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     } else {
         "false"
     };
+    let health_state = context.command_center.health_state.clone();
+    let health_reason = context.command_center.health_reason.clone();
+    let queue_depth_value = context.command_center.queue_depth.to_string();
+    let failure_streak_value = context.command_center.failure_streak.to_string();
+    let processed_cases_value = context.command_center.processed_case_count.to_string();
+    let alert_count_value = context.command_center.alert_count.to_string();
+    let alert_count_feed_value = alert_count_value.clone();
+    let widget_count_value = context.command_center.widget_count.to_string();
+    let timeline_cycle_count_value = context.command_center.timeline_cycle_count.to_string();
+    let timeline_cycle_count_table_value = timeline_cycle_count_value.clone();
+    let timeline_invalid_cycle_count_value = context
+        .command_center
+        .timeline_invalid_cycle_count
+        .to_string();
+    let primary_alert_code = context.command_center.primary_alert_code.clone();
+    let primary_alert_severity = context.command_center.primary_alert_severity.clone();
+    let primary_alert_message = context.command_center.primary_alert_message.clone();
 
     let shell = view! {
         <div
@@ -363,33 +418,70 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                     </section>
                     <main id="tau-ops-protected-shell" data-route="/ops" aria-hidden=protected_hidden>
                         <section id="tau-ops-command-center" aria-live="polite">
-                            <section id="tau-ops-kpi-grid">
-                                <article id="tau-ops-kpi-health" data-component="HealthBadge">
+                            <section id="tau-ops-kpi-grid" data-kpi-card-count="6">
+                                <article
+                                    id="tau-ops-kpi-health"
+                                    data-component="HealthBadge"
+                                    data-health-state=health_state
+                                    data-health-reason=health_reason
+                                >
                                     <h2>System Health</h2>
-                                    <p>Awaiting live gateway data</p>
+                                    <p id="tau-ops-health-state-value">{context.command_center.health_state.clone()}</p>
+                                    <p id="tau-ops-health-reason-value">{context.command_center.health_reason.clone()}</p>
                                 </article>
-                                <article id="tau-ops-kpi-queue" data-component="StatCard">
+                                <article id="tau-ops-kpi-queue-depth" data-component="StatCard" data-kpi-card="queue-depth" data-kpi-value=queue_depth_value>
                                     <h2>Queue Depth</h2>
-                                    <p>Awaiting live gateway data</p>
+                                    <p>{context.command_center.queue_depth}</p>
+                                </article>
+                                <article id="tau-ops-kpi-failure-streak" data-component="StatCard" data-kpi-card="failure-streak" data-kpi-value=failure_streak_value>
+                                    <h2>Failure Streak</h2>
+                                    <p>{context.command_center.failure_streak}</p>
+                                </article>
+                                <article id="tau-ops-kpi-processed-cases" data-component="StatCard" data-kpi-card="processed-cases" data-kpi-value=processed_cases_value>
+                                    <h2>Processed Cases</h2>
+                                    <p>{context.command_center.processed_case_count}</p>
+                                </article>
+                                <article id="tau-ops-kpi-alert-count" data-component="StatCard" data-kpi-card="alert-count" data-kpi-value=alert_count_value>
+                                    <h2>Alert Count</h2>
+                                    <p>{context.command_center.alert_count}</p>
+                                </article>
+                                <article id="tau-ops-kpi-widget-count" data-component="StatCard" data-kpi-card="widget-count" data-kpi-value=widget_count_value>
+                                    <h2>Widget Count</h2>
+                                    <p>{context.command_center.widget_count}</p>
+                                </article>
+                                <article id="tau-ops-kpi-timeline-cycles" data-component="StatCard" data-kpi-card="timeline-cycles" data-kpi-value=timeline_cycle_count_value>
+                                    <h2>Timeline Cycles</h2>
+                                    <p>{context.command_center.timeline_cycle_count}</p>
                                 </article>
                             </section>
-                            <section id="tau-ops-alert-feed" data-component="AlertFeed">
+                            <section
+                                id="tau-ops-alert-feed"
+                                data-component="AlertFeed"
+                                data-alert-count=alert_count_feed_value
+                                data-primary-alert-code=primary_alert_code
+                                data-primary-alert-severity=primary_alert_severity
+                            >
                                 <h2>Alerts</h2>
-                                <p>No alerts loaded</p>
+                                <p id="tau-ops-primary-alert-message">{primary_alert_message}</p>
                             </section>
-                            <section id="tau-ops-data-table" data-component="DataTable">
+                            <section
+                                id="tau-ops-data-table"
+                                data-component="DataTable"
+                                data-timeline-cycle-count=timeline_cycle_count_table_value
+                                data-timeline-invalid-cycle-count=timeline_invalid_cycle_count_value
+                            >
                                 <h2>Recent Cycles</h2>
                                 <table>
                                     <thead>
                                         <tr>
-                                            <th scope="col">Cycle</th>
-                                            <th scope="col">Status</th>
+                                            <th scope="col">Cycle Reports</th>
+                                            <th scope="col">Invalid Reports</th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        <tr>
-                                            <td>bootstrap</td>
-                                            <td>pending</td>
+                                        <tr id="tau-ops-timeline-summary-row">
+                                            <td>{context.command_center.timeline_cycle_count}</td>
+                                            <td>{context.command_center.timeline_invalid_cycle_count}</td>
                                         </tr>
                                     </tbody>
                                 </table>
@@ -407,8 +499,8 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
 mod tests {
     use super::{
         render_tau_ops_dashboard_shell, render_tau_ops_dashboard_shell_with_context,
-        TauOpsDashboardAuthMode, TauOpsDashboardRoute, TauOpsDashboardShellContext,
-        TauOpsDashboardSidebarState, TauOpsDashboardTheme,
+        TauOpsDashboardAuthMode, TauOpsDashboardCommandCenterSnapshot, TauOpsDashboardRoute,
+        TauOpsDashboardShellContext, TauOpsDashboardSidebarState, TauOpsDashboardTheme,
     };
 
     #[test]
@@ -446,6 +538,7 @@ mod tests {
             active_route: TauOpsDashboardRoute::Login,
             theme: TauOpsDashboardTheme::Dark,
             sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
         });
         assert!(html.contains("data-auth-mode=\"password-session\""));
         assert!(html.contains("data-active-route=\"login\""));
@@ -461,6 +554,7 @@ mod tests {
             active_route: TauOpsDashboardRoute::Ops,
             theme: TauOpsDashboardTheme::Dark,
             sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
         });
         assert!(html.contains("data-auth-mode=\"none\""));
         assert!(html.contains("data-login-required=\"false\""));
@@ -511,6 +605,7 @@ mod tests {
             active_route: TauOpsDashboardRoute::Login,
             theme: TauOpsDashboardTheme::Dark,
             sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
         });
         assert!(html.contains("id=\"tau-ops-breadcrumbs\""));
         assert!(html.contains("data-breadcrumb-current=\"login\""));
@@ -555,6 +650,7 @@ mod tests {
                 active_route: route,
                 theme: TauOpsDashboardTheme::Dark,
                 sidebar_state: TauOpsDashboardSidebarState::Expanded,
+                command_center: TauOpsDashboardCommandCenterSnapshot::default(),
             });
             assert!(html.contains(&format!("data-active-route=\"{expected_active_route}\"")));
             assert!(html.contains(&format!(
@@ -583,6 +679,7 @@ mod tests {
             active_route: TauOpsDashboardRoute::Ops,
             theme: TauOpsDashboardTheme::Dark,
             sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
         });
         assert!(html.contains("data-sidebar-state=\"collapsed\""));
         assert!(html.contains("data-sidebar-target-state=\"expanded\""));
@@ -597,6 +694,7 @@ mod tests {
             active_route: TauOpsDashboardRoute::Chat,
             theme: TauOpsDashboardTheme::Light,
             sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
         });
         assert!(html.contains("data-theme=\"light\""));
         assert!(html.contains(
@@ -606,5 +704,45 @@ mod tests {
             "id=\"tau-ops-theme-toggle-light\" data-theme-option=\"light\" aria-pressed=\"true\""
         ));
         assert!(html.contains("href=\"/ops/chat?theme=dark&amp;sidebar=expanded\""));
+    }
+
+    #[test]
+    fn functional_spec_2806_c01_c02_c03_command_center_snapshot_markers_render() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Ops,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot {
+                health_state: "healthy".to_string(),
+                health_reason: "no recent transport failures observed".to_string(),
+                queue_depth: 3,
+                failure_streak: 1,
+                processed_case_count: 8,
+                alert_count: 2,
+                widget_count: 6,
+                timeline_cycle_count: 9,
+                timeline_invalid_cycle_count: 1,
+                primary_alert_code: "dashboard_queue_backlog".to_string(),
+                primary_alert_severity: "warning".to_string(),
+                primary_alert_message: "runtime backlog detected (queue_depth=3)".to_string(),
+            },
+        });
+
+        assert!(html.contains("data-health-state=\"healthy\""));
+        assert!(html.contains("data-health-reason=\"no recent transport failures observed\""));
+        assert_eq!(html.matches("data-kpi-card=").count(), 6);
+        assert!(html.contains("data-kpi-card=\"queue-depth\" data-kpi-value=\"3\""));
+        assert!(html.contains("data-kpi-card=\"failure-streak\" data-kpi-value=\"1\""));
+        assert!(html.contains("data-kpi-card=\"processed-cases\" data-kpi-value=\"8\""));
+        assert!(html.contains("data-kpi-card=\"alert-count\" data-kpi-value=\"2\""));
+        assert!(html.contains("data-kpi-card=\"widget-count\" data-kpi-value=\"6\""));
+        assert!(html.contains("data-kpi-card=\"timeline-cycles\" data-kpi-value=\"9\""));
+        assert!(html.contains("data-alert-count=\"2\""));
+        assert!(html.contains("data-primary-alert-code=\"dashboard_queue_backlog\""));
+        assert!(html.contains("data-primary-alert-severity=\"warning\""));
+        assert!(html.contains("runtime backlog detected (queue_depth=3)"));
+        assert!(html.contains("data-timeline-cycle-count=\"9\""));
+        assert!(html.contains("data-timeline-invalid-cycle-count=\"1\""));
     }
 }

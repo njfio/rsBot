@@ -1144,6 +1144,43 @@ async fn functional_spec_2802_c03_invalid_query_control_values_fall_back_to_defa
 }
 
 #[tokio::test]
+async fn functional_spec_2806_c01_c02_c03_ops_shell_command_center_markers_reflect_dashboard_snapshot(
+) {
+    let temp = tempdir().expect("tempdir");
+    write_dashboard_runtime_fixture(temp.path());
+    write_training_runtime_fixture(temp.path(), 0);
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!("http://{addr}/ops"))
+        .send()
+        .await
+        .expect("ops shell request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops shell body");
+
+    assert!(body.contains("data-health-state=\"healthy\""));
+    assert!(body.contains("data-health-reason=\"no recent transport failures observed\""));
+    assert_eq!(body.matches("data-kpi-card=").count(), 6);
+    assert!(body.contains("data-kpi-card=\"queue-depth\" data-kpi-value=\"1\""));
+    assert!(body.contains("data-kpi-card=\"failure-streak\" data-kpi-value=\"0\""));
+    assert!(body.contains("data-kpi-card=\"processed-cases\" data-kpi-value=\"2\""));
+    assert!(body.contains("data-kpi-card=\"alert-count\" data-kpi-value=\"2\""));
+    assert!(body.contains("data-kpi-card=\"widget-count\" data-kpi-value=\"2\""));
+    assert!(body.contains("data-kpi-card=\"timeline-cycles\" data-kpi-value=\"2\""));
+    assert!(body.contains("data-alert-count=\"2\""));
+    assert!(body.contains("data-primary-alert-code=\"dashboard_queue_backlog\""));
+    assert!(body.contains("data-primary-alert-severity=\"warning\""));
+    assert!(body.contains("runtime backlog detected (queue_depth=1)"));
+    assert!(body.contains("data-timeline-cycle-count=\"2\""));
+    assert!(body.contains("data-timeline-invalid-cycle-count=\"1\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_webchat_endpoint_returns_html_shell() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 10_000, "secret");

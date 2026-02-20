@@ -98,7 +98,7 @@ use cortex_runtime::{
 use dashboard_shell_page::render_gateway_dashboard_shell_page;
 use dashboard_status::{
     apply_gateway_dashboard_action, collect_gateway_dashboard_snapshot,
-    GatewayDashboardActionRequest,
+    collect_tau_ops_dashboard_command_center_snapshot, GatewayDashboardActionRequest,
 };
 use deploy_runtime::{handle_gateway_agent_stop, handle_gateway_deploy};
 use jobs_runtime::{handle_gateway_job_cancel, handle_gateway_jobs_list};
@@ -1045,6 +1045,9 @@ fn render_tau_ops_dashboard_shell_for_route(
             active_route: route,
             theme: controls.theme(),
             sidebar_state: controls.sidebar_state(),
+            command_center: collect_tau_ops_dashboard_command_center_snapshot(
+                &state.config.state_dir,
+            ),
         },
     ))
 }
