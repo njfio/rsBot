@@ -177,6 +177,65 @@ pub(super) fn record_cortex_observer_event(
     append_jsonl_record(&gateway_cortex_observer_events_path(state_dir), &record)
 }
 
+pub(super) fn record_cortex_session_append_event(
+    state_dir: &Path,
+    session_key: &str,
+    head_id: Option<u64>,
+    entry_count: usize,
+) {
+    let _ = record_cortex_observer_event(
+        state_dir,
+        "session.append",
+        json!({
+            "session_key": session_key,
+            "head_id": head_id,
+            "entry_count": entry_count,
+        }),
+    );
+}
+
+pub(super) fn record_cortex_session_reset_event(state_dir: &Path, session_key: &str, reset: bool) {
+    let _ = record_cortex_observer_event(
+        state_dir,
+        "session.reset",
+        json!({"session_key": session_key, "reset": reset}),
+    );
+}
+
+pub(super) fn record_cortex_external_session_opened(
+    state_dir: &Path,
+    session_id: &str,
+    workspace_id: &str,
+    status: &str,
+) {
+    let _ = record_cortex_observer_event(
+        state_dir,
+        "external_coding_agent.session_opened",
+        json!({
+            "session_id": session_id,
+            "workspace_id": workspace_id,
+            "status": status,
+        }),
+    );
+}
+
+pub(super) fn record_cortex_external_session_closed(
+    state_dir: &Path,
+    session_id: &str,
+    workspace_id: &str,
+    status: &str,
+) {
+    let _ = record_cortex_observer_event(
+        state_dir,
+        "external_coding_agent.session_closed",
+        json!({
+            "session_id": session_id,
+            "workspace_id": workspace_id,
+            "status": status,
+        }),
+    );
+}
+
 fn load_cortex_status_report(
     state_dir: &Path,
 ) -> Result<GatewayCortexStatusReport, OpenResponsesApiError> {
