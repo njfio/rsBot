@@ -29,6 +29,8 @@ use super::{
 const CORTEX_OBSERVER_EVENTS_FILE: &str = "cortex-observer-events.jsonl";
 const CORTEX_OBSERVER_SCHEMA_VERSION: u32 = 1;
 const CORTEX_OBSERVER_RECENT_EVENTS_LIMIT: usize = 32;
+const CORTEX_READINESS_STALE_MAX_AGE_SECONDS: u64 = 21_600;
+const CORTEX_REQUIRED_CHAT_EVENT_TYPE: &str = "cortex.chat.request";
 
 #[derive(Debug, Deserialize)]
 struct GatewayCortexChatRequest {
@@ -52,8 +54,14 @@ struct GatewayCortexStatusReport {
     schema_version: u32,
     generated_unix_ms: u64,
     state_present: bool,
+    health_state: String,
+    rollout_gate: String,
+    reason_code: String,
+    health_reason: String,
     total_events: u64,
     invalid_events: u64,
+    last_event_unix_ms: Option<u64>,
+    last_event_age_seconds: Option<u64>,
     event_type_counts: BTreeMap<String, u64>,
     recent_events: Vec<GatewayCortexObserverEventRecord>,
     diagnostics: Vec<String>,
@@ -65,8 +73,14 @@ impl Default for GatewayCortexStatusReport {
             schema_version: CORTEX_OBSERVER_SCHEMA_VERSION,
             generated_unix_ms: current_unix_timestamp_ms(),
             state_present: false,
+            health_state: "unknown".to_string(),
+            rollout_gate: "hold".to_string(),
+            reason_code: "cortex_status_uninitialized".to_string(),
+            health_reason: "cortex readiness status not yet evaluated".to_string(),
             total_events: 0,
             invalid_events: 0,
+            last_event_unix_ms: None,
+            last_event_age_seconds: None,
             event_type_counts: BTreeMap::new(),
             recent_events: Vec::new(),
             diagnostics: Vec::new(),
@@ -329,6 +343,7 @@ fn load_cortex_status_report(
             "cortex_observer_events_missing:{}",
             events_path.display()
         ));
+        apply_cortex_readiness_classification(&mut report, &events_path);
         return Ok(report);
     }
 
@@ -340,9 +355,12 @@ fn load_cortex_status_report(
                 "cortex_observer_events_read_failed:{}:{error}",
                 events_path.display()
             ));
+            apply_cortex_readiness_classification(&mut report, &events_path);
             return Ok(report);
         }
     };
+
+    let mut last_event_unix_ms = None::<u64>;
 
     for (line_number, line) in raw.lines().enumerate() {
         let trimmed = line.trim();
@@ -376,6 +394,11 @@ fn load_cortex_status_report(
             .event_type_counts
             .entry(normalized_event_type.to_string())
             .or_default() += 1;
+        last_event_unix_ms = Some(
+            last_event_unix_ms
+                .map(|existing| existing.max(parsed.timestamp_unix_ms))
+                .unwrap_or(parsed.timestamp_unix_ms),
+        );
 
         report.recent_events.push(GatewayCortexObserverEventRecord {
             event_type: normalized_event_type.to_string(),
@@ -397,7 +420,107 @@ fn load_cortex_status_report(
         ));
     }
 
+    report.last_event_unix_ms = last_event_unix_ms;
+    report.last_event_age_seconds = report.last_event_unix_ms.map(|last_seen| {
+        report
+            .generated_unix_ms
+            .saturating_sub(last_seen)
+            .saturating_div(1000)
+    });
+    apply_cortex_readiness_classification(&mut report, &events_path);
+
     Ok(report)
+}
+
+fn apply_cortex_readiness_classification(
+    report: &mut GatewayCortexStatusReport,
+    events_path: &Path,
+) {
+    report.rollout_gate = "hold".to_string();
+
+    if !report.state_present {
+        report.health_state = "failing".to_string();
+        report.reason_code = "cortex_observer_events_missing".to_string();
+        report.health_reason = format!(
+            "cortex observer events artifact is missing at {}",
+            events_path.display()
+        );
+        return;
+    }
+
+    if report
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.starts_with("cortex_observer_events_read_failed:"))
+    {
+        report.health_state = "failing".to_string();
+        report.reason_code = "cortex_observer_events_read_failed".to_string();
+        report.health_reason = "failed to read cortex observer event history".to_string();
+        return;
+    }
+
+    if report.total_events == 0 && report.invalid_events > 0 {
+        report.health_state = "failing".to_string();
+        report.reason_code = "cortex_observer_events_malformed".to_string();
+        report.health_reason = format!(
+            "cortex observer history contains {} malformed event lines and no valid events",
+            report.invalid_events
+        );
+        return;
+    }
+
+    if report.total_events == 0 {
+        report.health_state = "degraded".to_string();
+        report.reason_code = "cortex_observer_events_empty".to_string();
+        report.health_reason = "cortex observer history has no valid readiness events".to_string();
+        return;
+    }
+
+    if report.invalid_events > 0 {
+        report.health_state = "degraded".to_string();
+        report.reason_code = "cortex_observer_events_malformed".to_string();
+        report.health_reason = format!(
+            "cortex observer history includes {} malformed event lines",
+            report.invalid_events
+        );
+        return;
+    }
+
+    let cortex_chat_count = report
+        .event_type_counts
+        .get(CORTEX_REQUIRED_CHAT_EVENT_TYPE)
+        .copied()
+        .unwrap_or(0);
+    if cortex_chat_count == 0 {
+        report.health_state = "degraded".to_string();
+        report.reason_code = "cortex_chat_activity_missing".to_string();
+        report.health_reason =
+            "no cortex.chat.request event has been observed for readiness validation".to_string();
+        return;
+    }
+
+    let Some(last_event_age_seconds) = report.last_event_age_seconds else {
+        report.health_state = "degraded".to_string();
+        report.reason_code = "cortex_observer_last_event_unknown".to_string();
+        report.health_reason = "latest cortex observer event timestamp is unavailable".to_string();
+        return;
+    };
+
+    if last_event_age_seconds > CORTEX_READINESS_STALE_MAX_AGE_SECONDS {
+        report.health_state = "degraded".to_string();
+        report.reason_code = "cortex_observer_events_stale".to_string();
+        report.health_reason = format!(
+            "latest cortex observer event is stale (age={}s max={}s)",
+            last_event_age_seconds, CORTEX_READINESS_STALE_MAX_AGE_SECONDS
+        );
+        return;
+    }
+
+    report.health_state = "healthy".to_string();
+    report.rollout_gate = "pass".to_string();
+    report.reason_code = "cortex_ready".to_string();
+    report.health_reason =
+        "cortex observer history is fresh and includes validated cortex chat activity".to_string();
 }
 
 fn gateway_cortex_observer_events_path(state_dir: &Path) -> PathBuf {
@@ -431,6 +554,9 @@ mod tests {
         let temp = tempdir().expect("tempdir");
         let report = load_cortex_status_report(temp.path()).expect("load fallback report");
         assert!(!report.state_present);
+        assert_eq!(report.health_state, "failing");
+        assert_eq!(report.rollout_gate, "hold");
+        assert_eq!(report.reason_code, "cortex_observer_events_missing");
         assert_eq!(report.total_events, 0);
         assert_eq!(report.invalid_events, 0);
         assert!(report.event_type_counts.is_empty());
@@ -456,6 +582,9 @@ mod tests {
 
         let report = load_cortex_status_report(temp.path()).expect("load status report");
         assert!(report.state_present);
+        assert_eq!(report.health_state, "degraded");
+        assert_eq!(report.rollout_gate, "hold");
+        assert_eq!(report.reason_code, "cortex_observer_events_malformed");
         assert_eq!(report.total_events, 2);
         assert_eq!(report.invalid_events, 1);
         assert_eq!(
@@ -467,5 +596,74 @@ mod tests {
             Some(1)
         );
         assert_eq!(report.recent_events.len(), 2);
+    }
+
+    #[test]
+    fn unit_load_cortex_status_report_marks_healthy_for_fresh_chat_activity() {
+        let temp = tempdir().expect("tempdir");
+        let events_path = gateway_cortex_observer_events_path(temp.path());
+        std::fs::create_dir_all(events_path.parent().expect("events parent"))
+            .expect("create events directory");
+        let now = current_unix_timestamp_ms();
+        std::fs::write(
+            &events_path,
+            format!(
+                "{{\"schema_version\":1,\"timestamp_unix_ms\":{now},\"event_type\":\"cortex.chat.request\",\"metadata\":{{\"response_id\":\"r1\"}}}}\n"
+            ),
+        )
+        .expect("write events file");
+
+        let report = load_cortex_status_report(temp.path()).expect("load status report");
+        assert_eq!(report.health_state, "healthy");
+        assert_eq!(report.rollout_gate, "pass");
+        assert_eq!(report.reason_code, "cortex_ready");
+        assert_eq!(
+            report.event_type_counts.get("cortex.chat.request").copied(),
+            Some(1)
+        );
+        assert_eq!(report.last_event_unix_ms, Some(now));
+        assert!(report
+            .last_event_age_seconds
+            .map(|value| value <= CORTEX_READINESS_STALE_MAX_AGE_SECONDS)
+            .unwrap_or(false));
+    }
+
+    #[test]
+    fn unit_load_cortex_status_report_flags_stale_or_missing_chat_readiness() {
+        let temp = tempdir().expect("tempdir");
+        let events_path = gateway_cortex_observer_events_path(temp.path());
+        std::fs::create_dir_all(events_path.parent().expect("events parent"))
+            .expect("create events directory");
+        let stale_timestamp_ms = current_unix_timestamp_ms().saturating_sub(
+            (CORTEX_READINESS_STALE_MAX_AGE_SECONDS.saturating_add(60)).saturating_mul(1000),
+        );
+        std::fs::write(
+            &events_path,
+            format!(
+                "{{\"schema_version\":1,\"timestamp_unix_ms\":{stale_timestamp_ms},\"event_type\":\"cortex.chat.request\",\"metadata\":{{\"response_id\":\"r1\"}}}}\n"
+            ),
+        )
+        .expect("write stale events file");
+
+        let stale_report =
+            load_cortex_status_report(temp.path()).expect("load stale status report");
+        assert_eq!(stale_report.health_state, "degraded");
+        assert_eq!(stale_report.reason_code, "cortex_observer_events_stale");
+
+        std::fs::write(
+            &events_path,
+            format!(
+                "{{\"schema_version\":1,\"timestamp_unix_ms\":{},\"event_type\":\"session.append\",\"metadata\":{{\"session_key\":\"default\"}}}}\n",
+                current_unix_timestamp_ms()
+            ),
+        )
+        .expect("write non-chat events file");
+        let missing_chat_report =
+            load_cortex_status_report(temp.path()).expect("load missing chat status report");
+        assert_eq!(missing_chat_report.health_state, "degraded");
+        assert_eq!(
+            missing_chat_report.reason_code,
+            "cortex_chat_activity_missing"
+        );
     }
 }
