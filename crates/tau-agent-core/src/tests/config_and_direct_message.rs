@@ -1711,6 +1711,189 @@ async fn regression_spec_2602_c06_branch_slot_released_after_followup_completion
 }
 
 #[tokio::test]
+async fn integration_spec_2721_c01_branch_followup_payload_includes_process_delegation_lineage() {
+    struct BranchAppendTool;
+
+    #[async_trait]
+    impl AgentTool for BranchAppendTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "branch".to_string(),
+                description: "append branch request metadata".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" },
+                        "prompt": { "type": "string" }
+                    },
+                    "required": ["path", "prompt"],
+                    "additionalProperties": false
+                }),
+            }
+        }
+
+        async fn execute(&self, arguments: serde_json::Value) -> ToolExecutionResult {
+            let path = arguments
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            ToolExecutionResult::ok(serde_json::json!({
+                "tool": "branch",
+                "path": path,
+                "reason_code": "session_branch_created"
+            }))
+        }
+    }
+
+    let first_assistant = Message::assistant_blocks(vec![ContentBlock::ToolCall {
+        id: "call_branch_2721_1".to_string(),
+        name: "branch".to_string(),
+        arguments: serde_json::json!({
+            "path": "/tmp/.tau/sessions/default.sqlite",
+            "prompt": "Investigate fallback strategy"
+        }),
+    }]);
+    let branch_assistant = Message::assistant_text("Branch conclusion for delegation lineage.");
+    let parent_assistant = Message::assistant_text("Parent continuation.");
+
+    let client = Arc::new(MockClient {
+        responses: AsyncMutex::new(VecDeque::from([
+            ChatResponse {
+                message: first_assistant,
+                finish_reason: Some("tool_calls".to_string()),
+                usage: ChatUsage::default(),
+            },
+            ChatResponse {
+                message: branch_assistant,
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            },
+            ChatResponse {
+                message: parent_assistant,
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            },
+        ])),
+    });
+
+    let mut agent = Agent::new(client, AgentConfig::default());
+    agent.register_tool(BranchAppendTool);
+
+    let new_messages = agent
+        .prompt("Trigger branch with delegation metadata")
+        .await
+        .expect("branch follow-up should succeed");
+    let payload: serde_json::Value =
+        serde_json::from_str(&new_messages[2].text_content()).expect("branch payload json");
+
+    let delegation = payload
+        .get("process_delegation")
+        .expect("process delegation metadata must be present");
+    assert_eq!(delegation["channel"]["process_type"], "channel");
+    assert_eq!(delegation["branch"]["process_type"], "branch");
+    assert_eq!(delegation["worker"]["process_type"], "worker");
+    assert_eq!(
+        delegation["branch"]["parent_process_id"],
+        delegation["channel"]["process_id"]
+    );
+    assert_eq!(
+        delegation["worker"]["parent_process_id"],
+        delegation["branch"]["process_id"]
+    );
+    assert_eq!(delegation["branch"]["state"], "completed");
+    assert_eq!(delegation["worker"]["state"], "completed");
+}
+
+#[tokio::test]
+async fn functional_spec_2721_c02_branch_followup_reports_worker_runtime_profile_limits() {
+    struct BranchAppendTool;
+
+    #[async_trait]
+    impl AgentTool for BranchAppendTool {
+        fn definition(&self) -> ToolDefinition {
+            ToolDefinition {
+                name: "branch".to_string(),
+                description: "append branch request metadata".to_string(),
+                parameters: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" },
+                        "prompt": { "type": "string" }
+                    },
+                    "required": ["path", "prompt"],
+                    "additionalProperties": false
+                }),
+            }
+        }
+
+        async fn execute(&self, arguments: serde_json::Value) -> ToolExecutionResult {
+            let path = arguments
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            ToolExecutionResult::ok(serde_json::json!({
+                "tool": "branch",
+                "path": path,
+                "reason_code": "session_branch_created"
+            }))
+        }
+    }
+
+    let first_assistant = Message::assistant_blocks(vec![ContentBlock::ToolCall {
+        id: "call_branch_2721_2".to_string(),
+        name: "branch".to_string(),
+        arguments: serde_json::json!({
+            "path": "/tmp/.tau/sessions/default.sqlite",
+            "prompt": "Gather worker profile limits"
+        }),
+    }]);
+    let branch_assistant = Message::assistant_text("Worker profile conclusion.");
+    let parent_assistant = Message::assistant_text("Parent continuation.");
+
+    let client = Arc::new(MockClient {
+        responses: AsyncMutex::new(VecDeque::from([
+            ChatResponse {
+                message: first_assistant,
+                finish_reason: Some("tool_calls".to_string()),
+                usage: ChatUsage::default(),
+            },
+            ChatResponse {
+                message: branch_assistant,
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            },
+            ChatResponse {
+                message: parent_assistant,
+                finish_reason: Some("stop".to_string()),
+                usage: ChatUsage::default(),
+            },
+        ])),
+    });
+
+    let mut agent = Agent::new(client, AgentConfig::default());
+    agent.register_tool(BranchAppendTool);
+
+    let new_messages = agent
+        .prompt("Trigger branch and inspect worker limits")
+        .await
+        .expect("branch follow-up should succeed");
+    let payload: serde_json::Value =
+        serde_json::from_str(&new_messages[2].text_content()).expect("branch payload json");
+
+    let worker_profile = payload
+        .get("branch_followup")
+        .and_then(|value| value.get("worker_runtime_profile"))
+        .expect("worker runtime profile metadata must be present");
+    assert_eq!(worker_profile["process_type"], "worker");
+    assert_eq!(worker_profile["max_turns"], 25);
+    assert_eq!(worker_profile["max_context_messages"], 96);
+    assert_eq!(
+        worker_profile["tool_allowlist"],
+        serde_json::json!(["memory_search", "memory_write"])
+    );
+}
+
+#[tokio::test]
 async fn integration_scoped_tool_lifecycle_supports_prompt_execution() {
     let first_assistant = Message::assistant_blocks(vec![ContentBlock::ToolCall {
         id: "call_1".to_string(),
