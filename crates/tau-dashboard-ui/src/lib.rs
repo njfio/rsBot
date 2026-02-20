@@ -646,6 +646,10 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                         id="tau-ops-control-action-pause"
                                         data-action-enabled=action_pause_enabled_value
                                         data-action="pause"
+                                        data-confirm-required="true"
+                                        data-confirm-title="Confirm pause action"
+                                        data-confirm-body="Pause command-center processing until resumed."
+                                        data-confirm-verb="pause"
                                         type="button"
                                     >
                                         Pause
@@ -654,6 +658,10 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                         id="tau-ops-control-action-resume"
                                         data-action-enabled=action_resume_enabled_value
                                         data-action="resume"
+                                        data-confirm-required="true"
+                                        data-confirm-title="Confirm resume action"
+                                        data-confirm-body="Resume command-center processing."
+                                        data-confirm-verb="resume"
                                         type="button"
                                     >
                                         Resume
@@ -662,6 +670,10 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                         id="tau-ops-control-action-refresh"
                                         data-action-enabled=action_refresh_enabled_value
                                         data-action="refresh"
+                                        data-confirm-required="true"
+                                        data-confirm-title="Confirm refresh action"
+                                        data-confirm-body="Refresh command-center state from latest runtime artifacts."
+                                        data-confirm-verb="refresh"
                                         type="button"
                                     >
                                         Refresh
@@ -1119,6 +1131,56 @@ mod tests {
         assert!(html.contains("data-last-action-name=\"pause\""));
         assert!(html.contains("data-last-action-actor=\"ops-user\""));
         assert!(html.contains("data-last-action-timestamp=\"90210\""));
+    }
+
+    #[test]
+    fn functional_spec_2826_c01_c02_control_actions_expose_confirmation_markers() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Ops,
+            theme: TauOpsDashboardTheme::Dark,
+            sidebar_state: TauOpsDashboardSidebarState::Expanded,
+            command_center: TauOpsDashboardCommandCenterSnapshot {
+                health_state: "healthy".to_string(),
+                health_reason: "operator controls are ready".to_string(),
+                rollout_gate: "pass".to_string(),
+                control_mode: "running".to_string(),
+                control_paused: false,
+                action_pause_enabled: true,
+                action_resume_enabled: false,
+                action_refresh_enabled: true,
+                last_action_request_id: "none".to_string(),
+                last_action_name: "none".to_string(),
+                last_action_actor: "none".to_string(),
+                last_action_timestamp_unix_ms: 0,
+                timeline_range: "1h".to_string(),
+                timeline_point_count: 1,
+                timeline_last_timestamp_unix_ms: 811,
+                queue_depth: 0,
+                failure_streak: 0,
+                processed_case_count: 1,
+                alert_count: 1,
+                widget_count: 1,
+                timeline_cycle_count: 1,
+                timeline_invalid_cycle_count: 0,
+                primary_alert_code: "dashboard_healthy".to_string(),
+                primary_alert_severity: "info".to_string(),
+                primary_alert_message: "dashboard runtime health is nominal".to_string(),
+                alert_feed_rows: vec![],
+                connector_health_rows: vec![],
+            },
+        });
+
+        assert!(html.contains("id=\"tau-ops-control-action-pause\""));
+        assert!(html.contains(
+            "id=\"tau-ops-control-action-pause\" data-action-enabled=\"true\" data-action=\"pause\" data-confirm-required=\"true\" data-confirm-title=\"Confirm pause action\" data-confirm-body=\"Pause command-center processing until resumed.\" data-confirm-verb=\"pause\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-control-action-resume\" data-action-enabled=\"false\" data-action=\"resume\" data-confirm-required=\"true\" data-confirm-title=\"Confirm resume action\" data-confirm-body=\"Resume command-center processing.\" data-confirm-verb=\"resume\""
+        ));
+        assert!(html.contains(
+            "id=\"tau-ops-control-action-refresh\" data-action-enabled=\"true\" data-action=\"refresh\" data-confirm-required=\"true\" data-confirm-title=\"Confirm refresh action\" data-confirm-body=\"Refresh command-center state from latest runtime artifacts.\" data-confirm-verb=\"refresh\""
+        ));
     }
 
     #[test]

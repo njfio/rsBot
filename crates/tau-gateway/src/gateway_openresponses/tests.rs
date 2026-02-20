@@ -1290,6 +1290,37 @@ async fn functional_spec_2810_c01_c02_c03_ops_shell_control_markers_reflect_dash
 }
 
 #[tokio::test]
+async fn functional_spec_2826_c03_ops_shell_control_markers_include_confirmation_payload() {
+    let temp = tempdir().expect("tempdir");
+    write_dashboard_runtime_fixture(temp.path());
+    write_dashboard_control_state_fixture(temp.path());
+    write_training_runtime_fixture(temp.path(), 0);
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!("http://{addr}/ops"))
+        .send()
+        .await
+        .expect("ops shell request");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops shell body");
+
+    assert!(body.contains(
+        "id=\"tau-ops-control-action-pause\" data-action-enabled=\"false\" data-action=\"pause\" data-confirm-required=\"true\" data-confirm-title=\"Confirm pause action\" data-confirm-body=\"Pause command-center processing until resumed.\" data-confirm-verb=\"pause\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-control-action-resume\" data-action-enabled=\"true\" data-action=\"resume\" data-confirm-required=\"true\" data-confirm-title=\"Confirm resume action\" data-confirm-body=\"Resume command-center processing.\" data-confirm-verb=\"resume\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-control-action-refresh\" data-action-enabled=\"true\" data-action=\"refresh\" data-confirm-required=\"true\" data-confirm-title=\"Confirm refresh action\" data-confirm-body=\"Refresh command-center state from latest runtime artifacts.\" data-confirm-verb=\"refresh\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2814_c01_c02_ops_shell_timeline_chart_markers_reflect_snapshot_and_range_query(
 ) {
     let temp = tempdir().expect("tempdir");
