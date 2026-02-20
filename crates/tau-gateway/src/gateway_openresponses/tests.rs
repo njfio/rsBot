@@ -1018,6 +1018,52 @@ async fn functional_spec_2790_c05_ops_routes_include_navigation_and_breadcrumb_m
 }
 
 #[tokio::test]
+async fn functional_spec_2794_c01_c02_c03_all_sidebar_ops_routes_return_shell_with_route_markers() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let route_cases = [
+        ("/ops", "ops", "command-center"),
+        ("/ops/agents", "agents", "agent-fleet"),
+        ("/ops/agents/default", "agent-detail", "agent-detail"),
+        ("/ops/chat", "chat", "chat"),
+        ("/ops/sessions", "sessions", "sessions"),
+        ("/ops/memory", "memory", "memory"),
+        ("/ops/memory-graph", "memory-graph", "memory-graph"),
+        ("/ops/tools-jobs", "tools-jobs", "tools-jobs"),
+        ("/ops/channels", "channels", "channels"),
+        ("/ops/config", "config", "config"),
+        ("/ops/training", "training", "training"),
+        ("/ops/safety", "safety", "safety"),
+        ("/ops/diagnostics", "diagnostics", "diagnostics"),
+        ("/ops/deploy", "deploy", "deploy"),
+    ];
+
+    for (route, active_route, breadcrumb_current) in route_cases {
+        let response = client
+            .get(format!("http://{addr}{route}"))
+            .send()
+            .await
+            .expect("ops route request");
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "route {route} should resolve"
+        );
+        let body = response.text().await.expect("read ops route body");
+        assert!(body.contains("id=\"tau-ops-shell\""));
+        assert!(body.contains(&format!("data-active-route=\"{active_route}\"")));
+        assert!(body.contains("id=\"tau-ops-breadcrumbs\""));
+        assert!(body.contains(&format!("data-breadcrumb-current=\"{breadcrumb_current}\"")));
+        assert_eq!(body.matches("data-nav-item=").count(), 14);
+    }
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_webchat_endpoint_returns_html_shell() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 10_000, "secret");

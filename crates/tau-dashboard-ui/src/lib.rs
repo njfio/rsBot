@@ -46,6 +46,19 @@ impl TauOpsDashboardAuthMode {
 /// Public enum `TauOpsDashboardRoute` in `tau-dashboard-ui`.
 pub enum TauOpsDashboardRoute {
     Ops,
+    Agents,
+    AgentDetail,
+    Chat,
+    Sessions,
+    Memory,
+    MemoryGraph,
+    ToolsJobs,
+    Channels,
+    Config,
+    Training,
+    Safety,
+    Diagnostics,
+    Deploy,
     Login,
 }
 
@@ -54,6 +67,19 @@ impl TauOpsDashboardRoute {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ops => "ops",
+            Self::Agents => "agents",
+            Self::AgentDetail => "agent-detail",
+            Self::Chat => "chat",
+            Self::Sessions => "sessions",
+            Self::Memory => "memory",
+            Self::MemoryGraph => "memory-graph",
+            Self::ToolsJobs => "tools-jobs",
+            Self::Channels => "channels",
+            Self::Config => "config",
+            Self::Training => "training",
+            Self::Safety => "safety",
+            Self::Diagnostics => "diagnostics",
+            Self::Deploy => "deploy",
             Self::Login => "login",
         }
     }
@@ -61,6 +87,19 @@ impl TauOpsDashboardRoute {
     fn breadcrumb_token(self) -> &'static str {
         match self {
             Self::Ops => "command-center",
+            Self::Agents => "agent-fleet",
+            Self::AgentDetail => "agent-detail",
+            Self::Chat => "chat",
+            Self::Sessions => "sessions",
+            Self::Memory => "memory",
+            Self::MemoryGraph => "memory-graph",
+            Self::ToolsJobs => "tools-jobs",
+            Self::Channels => "channels",
+            Self::Config => "config",
+            Self::Training => "training",
+            Self::Safety => "safety",
+            Self::Diagnostics => "diagnostics",
+            Self::Deploy => "deploy",
             Self::Login => "login",
         }
     }
@@ -68,6 +107,19 @@ impl TauOpsDashboardRoute {
     fn breadcrumb_label(self) -> &'static str {
         match self {
             Self::Ops => "Command Center",
+            Self::Agents => "Agent Fleet",
+            Self::AgentDetail => "Agent Detail",
+            Self::Chat => "Conversation / Chat",
+            Self::Sessions => "Sessions Explorer",
+            Self::Memory => "Memory Explorer",
+            Self::MemoryGraph => "Memory Graph",
+            Self::ToolsJobs => "Tools & Jobs",
+            Self::Channels => "Multi-Channel",
+            Self::Config => "Configuration",
+            Self::Training => "Training & RL",
+            Self::Safety => "Safety & Security",
+            Self::Diagnostics => "Diagnostics & Audit",
+            Self::Deploy => "Deploy Agent",
             Self::Login => "Login",
         }
     }
@@ -107,10 +159,10 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     } else {
         "true"
     };
-    let protected_hidden = if matches!(context.active_route, TauOpsDashboardRoute::Ops) {
-        "false"
-    } else {
+    let protected_hidden = if matches!(context.active_route, TauOpsDashboardRoute::Login) {
         "true"
+    } else {
+        "false"
     };
 
     let shell = view! {
@@ -324,5 +376,49 @@ mod tests {
         assert!(html.contains("id=\"tau-ops-breadcrumbs\""));
         assert!(html.contains("data-breadcrumb-current=\"login\""));
         assert!(html.contains("id=\"tau-ops-breadcrumb-current\""));
+    }
+
+    #[test]
+    fn functional_spec_2794_c02_c03_route_context_tokens_match_expected_values() {
+        let route_cases = [
+            (TauOpsDashboardRoute::Ops, "ops", "command-center"),
+            (TauOpsDashboardRoute::Agents, "agents", "agent-fleet"),
+            (
+                TauOpsDashboardRoute::AgentDetail,
+                "agent-detail",
+                "agent-detail",
+            ),
+            (TauOpsDashboardRoute::Chat, "chat", "chat"),
+            (TauOpsDashboardRoute::Sessions, "sessions", "sessions"),
+            (TauOpsDashboardRoute::Memory, "memory", "memory"),
+            (
+                TauOpsDashboardRoute::MemoryGraph,
+                "memory-graph",
+                "memory-graph",
+            ),
+            (TauOpsDashboardRoute::ToolsJobs, "tools-jobs", "tools-jobs"),
+            (TauOpsDashboardRoute::Channels, "channels", "channels"),
+            (TauOpsDashboardRoute::Config, "config", "config"),
+            (TauOpsDashboardRoute::Training, "training", "training"),
+            (TauOpsDashboardRoute::Safety, "safety", "safety"),
+            (
+                TauOpsDashboardRoute::Diagnostics,
+                "diagnostics",
+                "diagnostics",
+            ),
+            (TauOpsDashboardRoute::Deploy, "deploy", "deploy"),
+            (TauOpsDashboardRoute::Login, "login", "login"),
+        ];
+
+        for (route, expected_active_route, expected_breadcrumb) in route_cases {
+            let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+                auth_mode: TauOpsDashboardAuthMode::Token,
+                active_route: route,
+            });
+            assert!(html.contains(&format!("data-active-route=\"{expected_active_route}\"")));
+            assert!(html.contains(&format!(
+                "data-breadcrumb-current=\"{expected_breadcrumb}\""
+            )));
+        }
     }
 }

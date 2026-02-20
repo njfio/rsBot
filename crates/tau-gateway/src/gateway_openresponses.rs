@@ -142,6 +142,19 @@ const OPENAI_CHAT_COMPLETIONS_ENDPOINT: &str = "/v1/chat/completions";
 const OPENAI_COMPLETIONS_ENDPOINT: &str = "/v1/completions";
 const OPENAI_MODELS_ENDPOINT: &str = "/v1/models";
 const OPS_DASHBOARD_ENDPOINT: &str = "/ops";
+const OPS_DASHBOARD_AGENTS_ENDPOINT: &str = "/ops/agents";
+const OPS_DASHBOARD_AGENT_DETAIL_ENDPOINT: &str = "/ops/agents/{agent_id}";
+const OPS_DASHBOARD_CHAT_ENDPOINT: &str = "/ops/chat";
+const OPS_DASHBOARD_SESSIONS_ENDPOINT: &str = "/ops/sessions";
+const OPS_DASHBOARD_MEMORY_ENDPOINT: &str = "/ops/memory";
+const OPS_DASHBOARD_MEMORY_GRAPH_ENDPOINT: &str = "/ops/memory-graph";
+const OPS_DASHBOARD_TOOLS_JOBS_ENDPOINT: &str = "/ops/tools-jobs";
+const OPS_DASHBOARD_CHANNELS_ENDPOINT: &str = "/ops/channels";
+const OPS_DASHBOARD_CONFIG_ENDPOINT: &str = "/ops/config";
+const OPS_DASHBOARD_TRAINING_ENDPOINT: &str = "/ops/training";
+const OPS_DASHBOARD_SAFETY_ENDPOINT: &str = "/ops/safety";
+const OPS_DASHBOARD_DIAGNOSTICS_ENDPOINT: &str = "/ops/diagnostics";
+const OPS_DASHBOARD_DEPLOY_ENDPOINT: &str = "/ops/deploy";
 const OPS_DASHBOARD_LOGIN_ENDPOINT: &str = "/ops/login";
 const DASHBOARD_SHELL_ENDPOINT: &str = "/dashboard";
 const WEBCHAT_ENDPOINT: &str = "/webchat";
@@ -930,6 +943,58 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
         )
         .route(OPS_DASHBOARD_ENDPOINT, get(handle_ops_dashboard_shell_page))
         .route(
+            OPS_DASHBOARD_AGENTS_ENDPOINT,
+            get(handle_ops_dashboard_agents_shell_page),
+        )
+        .route(
+            OPS_DASHBOARD_AGENT_DETAIL_ENDPOINT,
+            get(handle_ops_dashboard_agent_detail_shell_page),
+        )
+        .route(
+            OPS_DASHBOARD_CHAT_ENDPOINT,
+            get(handle_ops_dashboard_chat_shell_page),
+        )
+        .route(
+            OPS_DASHBOARD_SESSIONS_ENDPOINT,
+            get(handle_ops_dashboard_sessions_shell_page),
+        )
+        .route(
+            OPS_DASHBOARD_MEMORY_ENDPOINT,
+            get(handle_ops_dashboard_memory_shell_page),
+        )
+        .route(
+            OPS_DASHBOARD_MEMORY_GRAPH_ENDPOINT,
+            get(handle_ops_dashboard_memory_graph_shell_page),
+        )
+        .route(
+            OPS_DASHBOARD_TOOLS_JOBS_ENDPOINT,
+            get(handle_ops_dashboard_tools_jobs_shell_page),
+        )
+        .route(
+            OPS_DASHBOARD_CHANNELS_ENDPOINT,
+            get(handle_ops_dashboard_channels_shell_page),
+        )
+        .route(
+            OPS_DASHBOARD_CONFIG_ENDPOINT,
+            get(handle_ops_dashboard_config_shell_page),
+        )
+        .route(
+            OPS_DASHBOARD_TRAINING_ENDPOINT,
+            get(handle_ops_dashboard_training_shell_page),
+        )
+        .route(
+            OPS_DASHBOARD_SAFETY_ENDPOINT,
+            get(handle_ops_dashboard_safety_shell_page),
+        )
+        .route(
+            OPS_DASHBOARD_DIAGNOSTICS_ENDPOINT,
+            get(handle_ops_dashboard_diagnostics_shell_page),
+        )
+        .route(
+            OPS_DASHBOARD_DEPLOY_ENDPOINT,
+            get(handle_ops_dashboard_deploy_shell_page),
+        )
+        .route(
             OPS_DASHBOARD_LOGIN_ENDPOINT,
             get(handle_ops_dashboard_login_shell_page),
         )
@@ -967,26 +1032,107 @@ fn resolve_tau_ops_dashboard_auth_mode(
     }
 }
 
-async fn handle_ops_dashboard_shell_page(
-    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+fn render_tau_ops_dashboard_shell_for_route(
+    state: &Arc<GatewayOpenResponsesServerState>,
+    route: TauOpsDashboardRoute,
 ) -> Html<String> {
     Html(render_tau_ops_dashboard_shell_with_context(
         TauOpsDashboardShellContext {
             auth_mode: resolve_tau_ops_dashboard_auth_mode(state.config.auth_mode),
-            active_route: TauOpsDashboardRoute::Ops,
+            active_route: route,
         },
     ))
+}
+
+async fn handle_ops_dashboard_shell_page(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+) -> Html<String> {
+    render_tau_ops_dashboard_shell_for_route(&state, TauOpsDashboardRoute::Ops)
+}
+
+async fn handle_ops_dashboard_agents_shell_page(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+) -> Html<String> {
+    render_tau_ops_dashboard_shell_for_route(&state, TauOpsDashboardRoute::Agents)
+}
+
+async fn handle_ops_dashboard_agent_detail_shell_page(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+    AxumPath(_agent_id): AxumPath<String>,
+) -> Html<String> {
+    render_tau_ops_dashboard_shell_for_route(&state, TauOpsDashboardRoute::AgentDetail)
+}
+
+async fn handle_ops_dashboard_chat_shell_page(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+) -> Html<String> {
+    render_tau_ops_dashboard_shell_for_route(&state, TauOpsDashboardRoute::Chat)
+}
+
+async fn handle_ops_dashboard_sessions_shell_page(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+) -> Html<String> {
+    render_tau_ops_dashboard_shell_for_route(&state, TauOpsDashboardRoute::Sessions)
+}
+
+async fn handle_ops_dashboard_memory_shell_page(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+) -> Html<String> {
+    render_tau_ops_dashboard_shell_for_route(&state, TauOpsDashboardRoute::Memory)
+}
+
+async fn handle_ops_dashboard_memory_graph_shell_page(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+) -> Html<String> {
+    render_tau_ops_dashboard_shell_for_route(&state, TauOpsDashboardRoute::MemoryGraph)
+}
+
+async fn handle_ops_dashboard_tools_jobs_shell_page(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+) -> Html<String> {
+    render_tau_ops_dashboard_shell_for_route(&state, TauOpsDashboardRoute::ToolsJobs)
+}
+
+async fn handle_ops_dashboard_channels_shell_page(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+) -> Html<String> {
+    render_tau_ops_dashboard_shell_for_route(&state, TauOpsDashboardRoute::Channels)
+}
+
+async fn handle_ops_dashboard_config_shell_page(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+) -> Html<String> {
+    render_tau_ops_dashboard_shell_for_route(&state, TauOpsDashboardRoute::Config)
+}
+
+async fn handle_ops_dashboard_training_shell_page(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+) -> Html<String> {
+    render_tau_ops_dashboard_shell_for_route(&state, TauOpsDashboardRoute::Training)
+}
+
+async fn handle_ops_dashboard_safety_shell_page(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+) -> Html<String> {
+    render_tau_ops_dashboard_shell_for_route(&state, TauOpsDashboardRoute::Safety)
+}
+
+async fn handle_ops_dashboard_diagnostics_shell_page(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+) -> Html<String> {
+    render_tau_ops_dashboard_shell_for_route(&state, TauOpsDashboardRoute::Diagnostics)
+}
+
+async fn handle_ops_dashboard_deploy_shell_page(
+    State(state): State<Arc<GatewayOpenResponsesServerState>>,
+) -> Html<String> {
+    render_tau_ops_dashboard_shell_for_route(&state, TauOpsDashboardRoute::Deploy)
 }
 
 async fn handle_ops_dashboard_login_shell_page(
     State(state): State<Arc<GatewayOpenResponsesServerState>>,
 ) -> Html<String> {
-    Html(render_tau_ops_dashboard_shell_with_context(
-        TauOpsDashboardShellContext {
-            auth_mode: resolve_tau_ops_dashboard_auth_mode(state.config.auth_mode),
-            active_route: TauOpsDashboardRoute::Login,
-        },
-    ))
+    render_tau_ops_dashboard_shell_for_route(&state, TauOpsDashboardRoute::Login)
 }
 
 async fn handle_dashboard_shell_page() -> Html<String> {
