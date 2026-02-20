@@ -1647,6 +1647,222 @@ async fn regression_spec_2917_ops_memory_create_requires_entry_id_and_summary() 
 }
 
 #[tokio::test]
+async fn integration_spec_2921_c02_c03_ops_memory_edit_submission_updates_existing_entry_and_sets_status_markers(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state.clone())
+        .await
+        .expect("spawn server");
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    let session_key = "ops-memory-edit";
+    let related_endpoint = expand_memory_entry_template(
+        GATEWAY_MEMORY_ENTRY_ENDPOINT,
+        session_key,
+        "mem-edit-related",
+    );
+    let related_create = client
+        .put(format!("http://{addr}{related_endpoint}"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "summary": "EditToken relation target",
+            "memory_type": "fact",
+            "workspace_id": "workspace-edit",
+            "channel_id": "channel-edit",
+            "actor_id": "operator",
+            "policy_gate": MEMORY_WRITE_POLICY_GATE
+        }))
+        .send()
+        .await
+        .expect("create related memory entry");
+    assert_eq!(related_create.status(), StatusCode::CREATED);
+
+    let target_endpoint = expand_memory_entry_template(
+        GATEWAY_MEMORY_ENTRY_ENDPOINT,
+        session_key,
+        "mem-edit-target",
+    );
+    let target_create = client
+        .put(format!("http://{addr}{target_endpoint}"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "summary": "EditToken initial summary",
+            "tags": ["alpha"],
+            "facts": ["fact-initial"],
+            "source_event_key": "evt-edit-initial",
+            "workspace_id": "workspace-edit",
+            "channel_id": "channel-edit",
+            "actor_id": "operator",
+            "memory_type": "fact",
+            "importance": 0.88,
+            "policy_gate": MEMORY_WRITE_POLICY_GATE
+        }))
+        .send()
+        .await
+        .expect("create target memory entry");
+    assert_eq!(target_create.status(), StatusCode::CREATED);
+
+    let edit_response = client
+        .post(format!("http://{addr}/ops/memory"))
+        .form(&[
+            ("theme", "light"),
+            ("sidebar", "collapsed"),
+            ("session", session_key),
+            ("operation", "edit"),
+            ("entry_id", "mem-edit-target"),
+            ("summary", "EditToken updated summary"),
+            ("tags", "gamma,delta"),
+            ("facts", "fact-updated-a|fact-updated-b"),
+            ("source_event_key", "evt-edit-updated"),
+            ("workspace_id", "workspace-edit"),
+            ("channel_id", "channel-edit"),
+            ("actor_id", "operator"),
+            ("memory_type", "goal"),
+            ("importance", "0.21"),
+            ("relation_target_id", "mem-edit-related"),
+            ("relation_type", "supports"),
+            ("relation_weight", "0.32"),
+        ])
+        .send()
+        .await
+        .expect("submit memory edit form");
+    assert_eq!(edit_response.status(), StatusCode::SEE_OTHER);
+    let location = edit_response
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .expect("ops memory edit redirect location");
+    assert!(location.contains("/ops/memory?"));
+    assert!(location.contains("create_status=updated"));
+    assert!(location.contains("created_memory_id=mem-edit-target"));
+
+    let redirect_response = client
+        .get(format!("http://{addr}{location}"))
+        .send()
+        .await
+        .expect("load ops memory edit redirect body");
+    assert_eq!(redirect_response.status(), StatusCode::OK);
+    let redirect_body = redirect_response
+        .text()
+        .await
+        .expect("read ops memory edit redirect body");
+    assert!(redirect_body.contains(
+        "id=\"tau-ops-memory-edit-status\" data-edit-status=\"updated\" data-edited-memory-id=\"mem-edit-target\""
+    ));
+
+    let read_updated_response = client
+        .get(format!(
+            "http://{addr}/gateway/memory/{session_key}/mem-edit-target"
+        ))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("read updated memory entry");
+    assert_eq!(read_updated_response.status(), StatusCode::OK);
+    let read_updated_payload: Value = read_updated_response
+        .json()
+        .await
+        .expect("parse updated memory entry payload");
+    assert_eq!(
+        read_updated_payload["entry"]["summary"].as_str(),
+        Some("EditToken updated summary")
+    );
+    assert_eq!(
+        read_updated_payload["entry"]["source_event_key"].as_str(),
+        Some("evt-edit-updated")
+    );
+    assert_eq!(
+        read_updated_payload["entry"]["memory_type"].as_str(),
+        Some("goal")
+    );
+    let importance = read_updated_payload["entry"]["importance"]
+        .as_f64()
+        .expect("importance should be present for updated entry");
+    assert!(
+        (importance - 0.21).abs() < 0.000_001,
+        "importance should preserve edit-form value"
+    );
+    assert_eq!(
+        read_updated_payload["entry"]["tags"],
+        json!(["gamma", "delta"])
+    );
+    assert_eq!(
+        read_updated_payload["entry"]["facts"],
+        json!(["fact-updated-a", "fact-updated-b"])
+    );
+    assert_eq!(
+        read_updated_payload["entry"]["relations"][0]["target_id"].as_str(),
+        Some("mem-edit-related")
+    );
+
+    let search_response = client
+        .get(format!(
+            "http://{addr}/ops/memory?theme=light&sidebar=collapsed&session={session_key}&query=EditToken&workspace_id=workspace-edit&channel_id=channel-edit&actor_id=operator&memory_type=goal"
+        ))
+        .send()
+        .await
+        .expect("query edited memory through ops route");
+    assert_eq!(search_response.status(), StatusCode::OK);
+    let search_body = search_response
+        .text()
+        .await
+        .expect("read memory search body");
+    assert!(search_body.contains("data-memory-id=\"mem-edit-target\" data-memory-type=\"goal\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2921_ops_memory_edit_requires_existing_entry() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("build client");
+
+    let session_key = "ops-memory-edit-required-existing";
+    let edit_missing_entry = client
+        .post(format!("http://{addr}/ops/memory"))
+        .form(&[
+            ("theme", "light"),
+            ("sidebar", "collapsed"),
+            ("session", session_key),
+            ("operation", "edit"),
+            ("entry_id", "mem-edit-missing"),
+            ("summary", "EditToken should not create from edit"),
+        ])
+        .send()
+        .await
+        .expect("submit form for missing entry");
+    assert_eq!(edit_missing_entry.status(), StatusCode::SEE_OTHER);
+    let location = edit_missing_entry
+        .headers()
+        .get(reqwest::header::LOCATION)
+        .and_then(|value| value.to_str().ok())
+        .expect("missing-entry edit redirect location");
+    assert!(location.contains("create_status=idle"));
+    assert!(!location.contains("created_memory_id="));
+
+    let read_missing = client
+        .get(format!(
+            "http://{addr}/gateway/memory/{session_key}/mem-edit-missing"
+        ))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("read missing edit target");
+    assert_eq!(read_missing.status(), StatusCode::NOT_FOUND);
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2798_c04_ops_shell_exposes_responsive_and_theme_contract_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");
