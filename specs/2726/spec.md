@@ -1,6 +1,6 @@
 # Spec: Issue #2726 - G19 phase-2 API parity for /api/memories/graph and force-layout rendering
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 Tau currently exposes memory graph data at `GET /gateway/memory-graph/{session_key}` and renders graph nodes in a circular layout in webchat. Spacebot parity checklist still expects `/api/memories/graph` route compatibility and force-layout visualization behavior for operational graph inspection.
