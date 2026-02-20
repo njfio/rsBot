@@ -13,6 +13,16 @@ pub(super) struct OpsShellControlsQuery {
     session_key: String,
     #[serde(default)]
     session: String,
+    #[serde(default)]
+    query: String,
+    #[serde(default)]
+    workspace_id: String,
+    #[serde(default)]
+    channel_id: String,
+    #[serde(default)]
+    actor_id: String,
+    #[serde(default)]
+    limit: String,
 }
 
 impl OpsShellControlsQuery {
@@ -49,6 +59,51 @@ impl OpsShellControlsQuery {
         } else {
             Some(session_key)
         }
+    }
+
+    pub(super) fn requested_memory_query(&self) -> Option<&str> {
+        let query = self.query.trim();
+        if query.is_empty() {
+            None
+        } else {
+            Some(query)
+        }
+    }
+
+    pub(super) fn requested_memory_workspace_id(&self) -> Option<String> {
+        let value = self.workspace_id.trim();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    }
+
+    pub(super) fn requested_memory_channel_id(&self) -> Option<String> {
+        let value = self.channel_id.trim();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    }
+
+    pub(super) fn requested_memory_actor_id(&self) -> Option<String> {
+        let value = self.actor_id.trim();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    }
+
+    pub(super) fn requested_memory_limit(&self) -> usize {
+        self.limit
+            .trim()
+            .parse::<usize>()
+            .ok()
+            .map(|value| value.clamp(1, 25))
+            .unwrap_or(25)
     }
 }
 
@@ -97,5 +152,80 @@ mod tests {
     fn unit_requested_session_key_returns_none_when_both_inputs_empty() {
         let controls = OpsShellControlsQuery::default();
         assert_eq!(controls.requested_session_key(), None);
+    }
+
+    #[test]
+    fn unit_requested_memory_query_returns_trimmed_query_when_present() {
+        let controls = OpsShellControlsQuery {
+            query: " ArcSwap ".to_string(),
+            ..OpsShellControlsQuery::default()
+        };
+        assert_eq!(controls.requested_memory_query(), Some("ArcSwap"));
+    }
+
+    #[test]
+    fn unit_requested_memory_workspace_id_trims_and_normalizes_empty_values() {
+        let controls = OpsShellControlsQuery {
+            workspace_id: " workspace-a ".to_string(),
+            ..OpsShellControlsQuery::default()
+        };
+        assert_eq!(
+            controls.requested_memory_workspace_id().as_deref(),
+            Some("workspace-a")
+        );
+
+        let empty = OpsShellControlsQuery::default();
+        assert_eq!(empty.requested_memory_workspace_id(), None);
+    }
+
+    #[test]
+    fn unit_requested_memory_channel_id_trims_and_normalizes_empty_values() {
+        let controls = OpsShellControlsQuery {
+            channel_id: " channel-a ".to_string(),
+            ..OpsShellControlsQuery::default()
+        };
+        assert_eq!(
+            controls.requested_memory_channel_id().as_deref(),
+            Some("channel-a")
+        );
+
+        let empty = OpsShellControlsQuery::default();
+        assert_eq!(empty.requested_memory_channel_id(), None);
+    }
+
+    #[test]
+    fn unit_requested_memory_actor_id_trims_and_normalizes_empty_values() {
+        let controls = OpsShellControlsQuery {
+            actor_id: " operator ".to_string(),
+            ..OpsShellControlsQuery::default()
+        };
+        assert_eq!(
+            controls.requested_memory_actor_id().as_deref(),
+            Some("operator")
+        );
+
+        let empty = OpsShellControlsQuery::default();
+        assert_eq!(empty.requested_memory_actor_id(), None);
+    }
+
+    #[test]
+    fn unit_requested_memory_limit_parses_and_clamps_supported_values() {
+        let valid = OpsShellControlsQuery {
+            limit: "7".to_string(),
+            ..OpsShellControlsQuery::default()
+        };
+        assert_eq!(valid.requested_memory_limit(), 7);
+
+        let too_large = OpsShellControlsQuery {
+            limit: "250".to_string(),
+            ..OpsShellControlsQuery::default()
+        };
+        assert_eq!(too_large.requested_memory_limit(), 25);
+
+        let invalid = OpsShellControlsQuery {
+            limit: "not-a-number".to_string(),
+            ..OpsShellControlsQuery::default()
+        };
+        assert_eq!(invalid.requested_memory_limit(), 25);
     }
 }

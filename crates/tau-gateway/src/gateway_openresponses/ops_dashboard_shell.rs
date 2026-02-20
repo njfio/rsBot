@@ -9,14 +9,16 @@ use tau_ai::{Message, MessageRole};
 use tau_dashboard_ui::{
     render_tau_ops_dashboard_shell_with_context, TauOpsDashboardAuthMode,
     TauOpsDashboardChatMessageRow, TauOpsDashboardChatSessionOptionRow,
-    TauOpsDashboardChatSnapshot, TauOpsDashboardRoute, TauOpsDashboardSessionGraphEdgeRow,
-    TauOpsDashboardSessionGraphNodeRow, TauOpsDashboardSessionTimelineRow,
-    TauOpsDashboardShellContext, TauOpsDashboardSidebarState, TauOpsDashboardTheme,
+    TauOpsDashboardChatSnapshot, TauOpsDashboardMemorySearchRow, TauOpsDashboardRoute,
+    TauOpsDashboardSessionGraphEdgeRow, TauOpsDashboardSessionGraphNodeRow,
+    TauOpsDashboardSessionTimelineRow, TauOpsDashboardShellContext, TauOpsDashboardSidebarState,
+    TauOpsDashboardTheme,
 };
+use tau_memory::runtime::{MemoryScopeFilter, MemorySearchOptions};
 use tau_session::SessionStore;
 
 use super::{
-    collect_tau_ops_dashboard_command_center_snapshot, gateway_session_path,
+    collect_tau_ops_dashboard_command_center_snapshot, gateway_memory_store, gateway_session_path,
     record_cortex_session_append_event, record_cortex_session_reset_event, sanitize_session_key,
     GatewayOpenResponsesServerState, OpenResponsesApiError, OpsShellControlsQuery,
     DEFAULT_SESSION_KEY, OPS_DASHBOARD_CHAT_ENDPOINT, OPS_DASHBOARD_CHAT_NEW_ENDPOINT,
@@ -340,6 +342,37 @@ fn collect_tau_ops_dashboard_chat_snapshot(
     let mut session_detail_timeline_rows = Vec::new();
     let mut session_graph_node_rows = Vec::new();
     let mut session_graph_edge_rows = Vec::new();
+    let memory_search_query = controls
+        .requested_memory_query()
+        .map(str::to_string)
+        .unwrap_or_default();
+    let mut memory_search_rows = Vec::new();
+
+    if !memory_search_query.trim().is_empty() {
+        let search_options = MemorySearchOptions {
+            limit: controls.requested_memory_limit(),
+            scope: MemoryScopeFilter {
+                workspace_id: controls.requested_memory_workspace_id(),
+                channel_id: controls.requested_memory_channel_id(),
+                actor_id: controls.requested_memory_actor_id(),
+            },
+            ..MemorySearchOptions::default()
+        };
+        let store = gateway_memory_store(&state.config.state_dir, active_session_key.as_str());
+        if let Ok(search_result) = store.search(memory_search_query.as_str(), &search_options) {
+            memory_search_rows = search_result
+                .matches
+                .iter()
+                .map(|entry| TauOpsDashboardMemorySearchRow {
+                    memory_id: entry.memory_id.clone(),
+                    summary: entry.summary.clone(),
+                    memory_type: entry.memory_type.as_str().to_string(),
+                    score: format!("{:.4}", entry.score),
+                })
+                .take(search_options.limit)
+                .collect();
+        }
+    }
 
     if let Ok(store) = SessionStore::load(&session_path) {
         let validation = store.validation_report();
@@ -408,6 +441,10 @@ fn collect_tau_ops_dashboard_chat_snapshot(
         session_detail_timeline_rows,
         session_graph_node_rows,
         session_graph_edge_rows,
+        memory_search_form_action: "/ops/memory".to_string(),
+        memory_search_form_method: "get".to_string(),
+        memory_search_query,
+        memory_search_rows,
     }
 }
 

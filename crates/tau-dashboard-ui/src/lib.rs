@@ -219,6 +219,15 @@ pub struct TauOpsDashboardChatMessageRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TauOpsDashboardMemorySearchRow` in `tau-dashboard-ui`.
+pub struct TauOpsDashboardMemorySearchRow {
+    pub memory_id: String,
+    pub summary: String,
+    pub memory_type: String,
+    pub score: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Public struct `TauOpsDashboardChatSessionOptionRow` in `tau-dashboard-ui`.
 pub struct TauOpsDashboardChatSessionOptionRow {
     pub session_key: String,
@@ -275,6 +284,10 @@ pub struct TauOpsDashboardChatSnapshot {
     pub session_detail_timeline_rows: Vec<TauOpsDashboardSessionTimelineRow>,
     pub session_graph_node_rows: Vec<TauOpsDashboardSessionGraphNodeRow>,
     pub session_graph_edge_rows: Vec<TauOpsDashboardSessionGraphEdgeRow>,
+    pub memory_search_form_action: String,
+    pub memory_search_form_method: String,
+    pub memory_search_query: String,
+    pub memory_search_rows: Vec<TauOpsDashboardMemorySearchRow>,
 }
 
 impl Default for TauOpsDashboardChatSnapshot {
@@ -308,6 +321,10 @@ impl Default for TauOpsDashboardChatSnapshot {
             session_detail_timeline_rows: vec![],
             session_graph_node_rows: vec![],
             session_graph_edge_rows: vec![],
+            memory_search_form_action: "/ops/memory".to_string(),
+            memory_search_form_method: "get".to_string(),
+            memory_search_query: String::new(),
+            memory_search_rows: vec![],
         }
     }
 }
@@ -511,6 +528,16 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     } else {
         "false"
     };
+    let memory_panel_hidden = if matches!(context.active_route, TauOpsDashboardRoute::Memory) {
+        "false"
+    } else {
+        "true"
+    };
+    let memory_panel_visible = if matches!(context.active_route, TauOpsDashboardRoute::Memory) {
+        "true"
+    } else {
+        "false"
+    };
     let command_center_panel_hidden = if matches!(context.active_route, TauOpsDashboardRoute::Ops) {
         "false"
     } else {
@@ -591,6 +618,42 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                             >
                                 {session_option.session_key.clone()}
                             </a>
+                        </li>
+                    }
+                })
+                .collect_view(),
+        )
+    };
+    let memory_search_form_action = context.chat.memory_search_form_action.clone();
+    let memory_search_form_method = context.chat.memory_search_form_method.clone();
+    let memory_search_query = context.chat.memory_search_query.clone();
+    let memory_search_rows = context.chat.memory_search_rows.clone();
+    let memory_result_count_value = memory_search_rows.len().to_string();
+    let memory_query_panel_attr = memory_search_query.clone();
+    let memory_query_input_value = memory_search_query.clone();
+    let memory_result_count_panel_attr = memory_result_count_value.clone();
+    let memory_result_count_list_attr = memory_result_count_value.clone();
+    let memory_results_view = if memory_search_rows.is_empty() {
+        leptos::either::Either::Left(view! {
+            <li id="tau-ops-memory-empty-state" data-empty-state="true">
+                No memory matches found.
+            </li>
+        })
+    } else {
+        leptos::either::Either::Right(
+            memory_search_rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| {
+                    let row_id = format!("tau-ops-memory-result-row-{index}");
+                    view! {
+                        <li
+                            id=row_id
+                            data-memory-id=row.memory_id.clone()
+                            data-memory-type=row.memory_type.clone()
+                            data-score=row.score.clone()
+                        >
+                            {row.summary.clone()}
                         </li>
                     }
                 })
@@ -1342,6 +1405,48 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                             </ul>
                             <ul id="tau-ops-session-graph-edges" data-edge-count=session_graph_edge_count>
                                 {session_graph_edges_view}
+                            </ul>
+                        </section>
+                        <section
+                            id="tau-ops-memory-panel"
+                            data-route="/ops/memory"
+                            aria-hidden=memory_panel_hidden
+                            data-panel-visible=memory_panel_visible
+                            data-query=memory_query_panel_attr
+                            data-result-count=memory_result_count_panel_attr
+                        >
+                            <h2>Memory Explorer</h2>
+                            <form
+                                id="tau-ops-memory-search-form"
+                                action=memory_search_form_action
+                                method=memory_search_form_method
+                            >
+                                <input id="tau-ops-memory-theme" type="hidden" name="theme" value=theme_attr />
+                                <input
+                                    id="tau-ops-memory-sidebar"
+                                    type="hidden"
+                                    name="sidebar"
+                                    value=sidebar_state_attr
+                                />
+                                <input
+                                    id="tau-ops-memory-session"
+                                    type="hidden"
+                                    name="session"
+                                    value=chat_session_key.clone()
+                                />
+                                <label for="tau-ops-memory-query">Search Memory</label>
+                                <input
+                                    id="tau-ops-memory-query"
+                                    type="search"
+                                    name="query"
+                                    value=memory_query_input_value
+                                />
+                                <button id="tau-ops-memory-search-button" type="submit">
+                                    Search
+                                </button>
+                            </form>
+                            <ul id="tau-ops-memory-results" data-result-count=memory_result_count_list_attr>
+                                {memory_results_view}
                             </ul>
                         </section>
                         <section
@@ -2385,6 +2490,29 @@ mod tests {
             "id=\"tau-ops-chat-token-1-2\" data-token-index=\"2\" data-token-value=\"two\""
         ));
         assert!(!html.contains("id=\"tau-ops-chat-token-stream-0\""));
+    }
+
+    #[test]
+    fn functional_spec_2905_c01_c03_memory_route_renders_search_panel_and_empty_state_markers() {
+        let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Memory,
+            theme: TauOpsDashboardTheme::Light,
+            sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot::default(),
+        });
+
+        assert!(html.contains(
+            "id=\"tau-ops-memory-panel\" data-route=\"/ops/memory\" aria-hidden=\"false\" data-panel-visible=\"true\" data-query=\"\" data-result-count=\"0\""
+        ));
+        assert!(html
+            .contains("id=\"tau-ops-memory-search-form\" action=\"/ops/memory\" method=\"get\""));
+        assert!(
+            html.contains("id=\"tau-ops-memory-query\" type=\"search\" name=\"query\" value=\"\"")
+        );
+        assert!(html.contains("id=\"tau-ops-memory-results\" data-result-count=\"0\""));
+        assert!(html.contains("id=\"tau-ops-memory-empty-state\" data-empty-state=\"true\""));
     }
 
     #[test]

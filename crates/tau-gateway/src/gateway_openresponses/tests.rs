@@ -1135,6 +1135,104 @@ async fn functional_spec_2794_c01_c02_c03_all_sidebar_ops_routes_return_shell_wi
 }
 
 #[tokio::test]
+async fn integration_spec_2905_c01_c02_c03_ops_memory_route_renders_relevant_search_results_and_empty_state(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state.clone())
+        .await
+        .expect("spawn server");
+    let client = Client::new();
+
+    let session_key = "ops-memory-search";
+    for index in 1..=6 {
+        let memory_id = format!("mem-match-{index}");
+        let entry_endpoint =
+            expand_memory_entry_template(GATEWAY_MEMORY_ENTRY_ENDPOINT, session_key, &memory_id);
+        let create_match = client
+            .put(format!("http://{addr}{entry_endpoint}"))
+            .bearer_auth("secret")
+            .json(&json!({
+                "summary": "ArcSwap",
+                "memory_type": "fact",
+                "workspace_id": "workspace-a",
+                "channel_id": "gateway",
+                "actor_id": "operator",
+                "policy_gate": MEMORY_WRITE_POLICY_GATE
+            }))
+            .send()
+            .await
+            .expect("create matching memory entry");
+        assert_eq!(create_match.status(), StatusCode::CREATED);
+    }
+
+    let cross_workspace_endpoint = expand_memory_entry_template(
+        GATEWAY_MEMORY_ENTRY_ENDPOINT,
+        session_key,
+        "mem-cross-workspace",
+    );
+    let create_cross_workspace = client
+        .put(format!("http://{addr}{cross_workspace_endpoint}"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "summary": "ArcSwap",
+            "memory_type": "fact",
+            "workspace_id": "workspace-b",
+            "channel_id": "gateway",
+            "actor_id": "operator",
+            "policy_gate": MEMORY_WRITE_POLICY_GATE
+        }))
+        .send()
+        .await
+        .expect("create cross-workspace memory entry");
+    assert_eq!(create_cross_workspace.status(), StatusCode::CREATED);
+
+    let query_response = client
+        .get(format!(
+            "http://{addr}/ops/memory?theme=light&sidebar=collapsed&session={session_key}&query=ArcSwap&workspace_id=workspace-a&limit=25"
+        ))
+        .send()
+        .await
+        .expect("ops memory search request");
+    assert_eq!(query_response.status(), StatusCode::OK);
+    let query_body = query_response.text().await.expect("read ops memory body");
+    assert!(query_body.contains(
+        "id=\"tau-ops-memory-panel\" data-route=\"/ops/memory\" aria-hidden=\"false\" data-panel-visible=\"true\" data-query=\"ArcSwap\""
+    ));
+    assert!(query_body.contains("data-result-count=\"6\""));
+    assert!(query_body
+        .contains("id=\"tau-ops-memory-search-form\" action=\"/ops/memory\" method=\"get\""));
+    assert!(query_body
+        .contains("id=\"tau-ops-memory-query\" type=\"search\" name=\"query\" value=\"ArcSwap\""));
+    assert!(query_body.contains(
+        "id=\"tau-ops-memory-result-row-0\" data-memory-id=\"mem-match-1\" data-memory-type=\"fact\""
+    ));
+    assert!(query_body.contains("id=\"tau-ops-memory-result-row-5\""));
+    assert!(query_body.contains("ArcSwap"));
+    assert!(!query_body.contains("mem-cross-workspace"));
+
+    let empty_response = client
+        .get(format!(
+            "http://{addr}/ops/memory?theme=light&sidebar=collapsed&session={session_key}&query=NoHitTerm"
+        ))
+        .send()
+        .await
+        .expect("ops memory no-hit request");
+    assert_eq!(empty_response.status(), StatusCode::OK);
+    let empty_body = empty_response
+        .text()
+        .await
+        .expect("read ops memory empty body");
+    assert!(empty_body.contains(
+        "id=\"tau-ops-memory-panel\" data-route=\"/ops/memory\" aria-hidden=\"false\" data-panel-visible=\"true\" data-query=\"NoHitTerm\" data-result-count=\"0\""
+    ));
+    assert!(empty_body.contains("id=\"tau-ops-memory-results\" data-result-count=\"0\""));
+    assert!(empty_body.contains("id=\"tau-ops-memory-empty-state\" data-empty-state=\"true\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2798_c04_ops_shell_exposes_responsive_and_theme_contract_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");
