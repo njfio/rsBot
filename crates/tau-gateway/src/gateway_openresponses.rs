@@ -32,10 +32,7 @@ use tau_agent_core::{
 };
 use tau_ai::{LlmClient, Message, MessageRole, StreamDeltaHandler};
 use tau_core::{current_unix_timestamp, current_unix_timestamp_ms, write_text_atomic};
-use tau_dashboard_ui::{
-    render_tau_ops_dashboard_shell_with_context, TauOpsDashboardAuthMode, TauOpsDashboardRoute,
-    TauOpsDashboardShellContext,
-};
+use tau_dashboard_ui::TauOpsDashboardRoute;
 use tau_memory::memory_contract::{MemoryEntry, MemoryScope};
 use tau_memory::runtime::{
     FileMemoryStore, MemoryRelationInput, MemoryScopeFilter, MemorySearchMatch,
@@ -70,6 +67,7 @@ mod deploy_runtime;
 mod jobs_runtime;
 mod multi_channel_status;
 mod openai_compat;
+mod ops_dashboard_shell;
 mod ops_shell_controls;
 mod request_translation;
 mod safety_runtime;
@@ -109,6 +107,10 @@ use openai_compat::{
     translate_chat_completions_request, translate_completions_request,
     OpenAiChatCompletionsRequest, OpenAiCompletionsRequest,
 };
+use ops_dashboard_shell::{
+    handle_ops_dashboard_chat_send, render_tau_ops_dashboard_shell_for_route,
+    resolve_tau_ops_dashboard_auth_mode,
+};
 use ops_shell_controls::OpsShellControlsQuery;
 use request_translation::{sanitize_session_key, translate_openresponses_request};
 use safety_runtime::{
@@ -147,6 +149,7 @@ const OPS_DASHBOARD_ENDPOINT: &str = "/ops";
 const OPS_DASHBOARD_AGENTS_ENDPOINT: &str = "/ops/agents";
 const OPS_DASHBOARD_AGENT_DETAIL_ENDPOINT: &str = "/ops/agents/{agent_id}";
 const OPS_DASHBOARD_CHAT_ENDPOINT: &str = "/ops/chat";
+const OPS_DASHBOARD_CHAT_SEND_ENDPOINT: &str = "/ops/chat/send";
 const OPS_DASHBOARD_SESSIONS_ENDPOINT: &str = "/ops/sessions";
 const OPS_DASHBOARD_MEMORY_ENDPOINT: &str = "/ops/memory";
 const OPS_DASHBOARD_MEMORY_GRAPH_ENDPOINT: &str = "/ops/memory-graph";
@@ -957,6 +960,10 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
             get(handle_ops_dashboard_chat_shell_page),
         )
         .route(
+            OPS_DASHBOARD_CHAT_SEND_ENDPOINT,
+            post(handle_ops_dashboard_chat_send),
+        )
+        .route(
             OPS_DASHBOARD_SESSIONS_ENDPOINT,
             get(handle_ops_dashboard_sessions_shell_page),
         )
@@ -1022,36 +1029,6 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
 
 async fn handle_webchat_page() -> Html<String> {
     Html(render_gateway_webchat_page())
-}
-
-fn resolve_tau_ops_dashboard_auth_mode(
-    mode: GatewayOpenResponsesAuthMode,
-) -> TauOpsDashboardAuthMode {
-    match mode {
-        GatewayOpenResponsesAuthMode::Token => TauOpsDashboardAuthMode::Token,
-        GatewayOpenResponsesAuthMode::PasswordSession => TauOpsDashboardAuthMode::PasswordSession,
-        GatewayOpenResponsesAuthMode::LocalhostDev => TauOpsDashboardAuthMode::None,
-    }
-}
-
-fn render_tau_ops_dashboard_shell_for_route(
-    state: &Arc<GatewayOpenResponsesServerState>,
-    route: TauOpsDashboardRoute,
-    controls: OpsShellControlsQuery,
-) -> Html<String> {
-    let mut command_center =
-        collect_tau_ops_dashboard_command_center_snapshot(&state.config.state_dir);
-    command_center.timeline_range = controls.timeline_range().to_string();
-
-    Html(render_tau_ops_dashboard_shell_with_context(
-        TauOpsDashboardShellContext {
-            auth_mode: resolve_tau_ops_dashboard_auth_mode(state.config.auth_mode),
-            active_route: route,
-            theme: controls.theme(),
-            sidebar_state: controls.sidebar_state(),
-            command_center,
-        },
-    ))
 }
 
 macro_rules! define_ops_shell_handler {

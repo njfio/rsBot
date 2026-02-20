@@ -9,6 +9,10 @@ pub(super) struct OpsShellControlsQuery {
     sidebar: String,
     #[serde(default)]
     range: String,
+    #[serde(default)]
+    session_key: String,
+    #[serde(default)]
+    session: String,
 }
 
 impl OpsShellControlsQuery {
@@ -31,6 +35,19 @@ impl OpsShellControlsQuery {
             "6h" => "6h",
             "24h" => "24h",
             _ => "1h",
+        }
+    }
+
+    pub(super) fn requested_session_key(&self) -> Option<&str> {
+        let session_key = if self.session_key.trim().is_empty() {
+            self.session.trim()
+        } else {
+            self.session_key.trim()
+        };
+        if session_key.is_empty() {
+            None
+        } else {
+            Some(session_key)
         }
     }
 }
@@ -64,5 +81,21 @@ mod tests {
 
         let empty = OpsShellControlsQuery::default();
         assert_eq!(empty.timeline_range(), "1h");
+    }
+
+    #[test]
+    fn unit_requested_session_key_prefers_explicit_session_key_over_session_alias() {
+        let controls = OpsShellControlsQuery {
+            session_key: "priority-key".to_string(),
+            session: "fallback-key".to_string(),
+            ..OpsShellControlsQuery::default()
+        };
+        assert_eq!(controls.requested_session_key(), Some("priority-key"));
+    }
+
+    #[test]
+    fn unit_requested_session_key_returns_none_when_both_inputs_empty() {
+        let controls = OpsShellControlsQuery::default();
+        assert_eq!(controls.requested_session_key(), None);
     }
 }
