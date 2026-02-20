@@ -1,6 +1,6 @@
 # Spec: Issue #2889 - session reset confirmation and clear-session contracts
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Tau Ops sessions surfaces provide session detail, lineage, and branch contracts, but they do not expose deterministic reset-confirmation form contracts tied to an ops reset action. This leaves the PRD checklist item “Reset clears session with confirmation” unverifiable.
