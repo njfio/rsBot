@@ -1,6 +1,6 @@
 # Spec: Issue #2872 - chat new-session creation contracts
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Tau Ops chat currently supports selecting existing sessions and sending messages, but does not expose a deterministic contract for explicit “new session” creation flow. This leaves the PRD checklist item “New session creation works” unverifiable.
