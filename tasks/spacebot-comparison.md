@@ -434,15 +434,15 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **What**: Spacebot has a complete React SPA with memory graph, cortex admin chat, channel viewer, cron management, config editor, file ingestion UI.
 **Why it matters**: Operators need visibility into what the agent is doing. CLI-only operation doesn't scale.
 **Pathway**:
-- [ ] Decision: build in `tau-dashboard` crate (consolidated with gateway) or as separate frontend repo
-- [ ] Tech stack: React + TypeScript + Vite (matching Spacebot) or Leptos/Dioxus (Rust-native)
+- [x] Decision: consolidate dashboard UI in gateway-served surfaces (no separate frontend repo) — see `docs/architecture/adr-006-dashboard-ui-stack.md`
+- [x] Tech stack: React + TypeScript + Vite selected for richer SPA evolution (incremental migration from embedded shell) — see `docs/architecture/adr-006-dashboard-ui-stack.md`
 - [x] Priority pages: Overview dashboard, Session viewer, Memory browser, Configuration editor
 - [x] Stretch page: Memory graph visualization
 - [x] Stretch page: Cortex admin chat
 - [x] Stretch page: Cron management
 - [x] Serve embedded SPA from gateway (rust-embed or include_bytes)
-- Progress evidence: #2614 (gateway dashboard operator tab baseline), #2667 (PRD memory explorer API foundation: entry CRUD + filtered search), #2727 (memory graph force-layout + `/api/memories/graph` parity), #2730 (cortex admin webchat panel), #2734 (webchat routines/cron management panel + live gateway status/jobs/cancel validation), #2738 (embedded `/dashboard` SPA shell served by gateway + status discovery wiring), #2742 (API-backed overview/sessions/memory/configuration priority pages in `/dashboard`)
-- **Files**: `tau-dashboard/` or new `interface/` directory
+- Progress evidence: #2614 (gateway dashboard operator tab baseline), #2667 (PRD memory explorer API foundation: entry CRUD + filtered search), #2727 (memory graph force-layout + `/api/memories/graph` parity), #2730 (cortex admin webchat panel), #2734 (webchat routines/cron management panel + live gateway status/jobs/cancel validation), #2738 (embedded `/dashboard` SPA shell served by gateway + status discovery wiring), #2742 (API-backed overview/sessions/memory/configuration priority pages in `/dashboard`), #2746 (ADR-backed architecture/stack decision closure)
+- **Files**: `crates/tau-gateway/src/gateway_openresponses/dashboard_shell.html`, `docs/architecture/adr-006-dashboard-ui-stack.md`
 - **Effort**: Large
 
 #### G19. Memory Graph Visualization
