@@ -3258,6 +3258,105 @@ async fn regression_spec_2697_c04_c06_deploy_and_stop_endpoints_reject_unauthori
 }
 
 #[tokio::test]
+async fn integration_spec_2701_c01_c02_c05_cortex_chat_endpoint_streams_authenticated_events_and_status_discovery(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .post("http://".to_string() + &addr.to_string() + "/cortex/chat")
+        .bearer_auth("secret")
+        .json(&json!({
+            "input": "summarize current operational posture"
+        }))
+        .send()
+        .await
+        .expect("cortex chat response");
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    assert!(content_type.contains("text/event-stream"));
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    while tokio::time::Instant::now() < deadline {
+        let maybe_chunk = tokio::time::timeout(Duration::from_millis(250), stream.next()).await;
+        let Ok(Some(Ok(chunk))) = maybe_chunk else {
+            continue;
+        };
+        buffer.push_str(String::from_utf8_lossy(&chunk).as_ref());
+        if buffer.contains("event: done") {
+            break;
+        }
+    }
+
+    assert!(buffer.contains("event: cortex.response.created"));
+    assert!(buffer.contains("event: cortex.response.output_text.delta"));
+    assert!(buffer.contains("event: cortex.response.output_text.done"));
+    assert!(buffer.contains("event: done"));
+
+    let status = client
+        .get(format!("http://{addr}{GATEWAY_STATUS_ENDPOINT}"))
+        .bearer_auth("secret")
+        .send()
+        .await
+        .expect("gateway status response")
+        .json::<Value>()
+        .await
+        .expect("parse gateway status payload");
+    assert_eq!(
+        status["gateway"]["web_ui"]["cortex_chat_endpoint"],
+        "/cortex/chat"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_2701_c03_c04_cortex_chat_endpoint_rejects_unauthorized_and_invalid_payloads(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let unauthorized = client
+        .post("http://".to_string() + &addr.to_string() + "/cortex/chat")
+        .json(&json!({
+            "input": "hello"
+        }))
+        .send()
+        .await
+        .expect("unauthorized cortex chat response");
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let invalid = client
+        .post("http://".to_string() + &addr.to_string() + "/cortex/chat")
+        .bearer_auth("secret")
+        .json(&json!({
+            "input": "   "
+        }))
+        .send()
+        .await
+        .expect("invalid cortex chat response");
+    assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+    let invalid_payload = invalid
+        .json::<Value>()
+        .await
+        .expect("parse invalid cortex chat payload");
+    assert_eq!(invalid_payload["error"]["code"], "invalid_cortex_input");
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn regression_gateway_memory_graph_endpoint_rejects_unauthorized_requests() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 10_000, "secret");

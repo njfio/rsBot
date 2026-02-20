@@ -58,6 +58,7 @@ use crate::remote_profile::GatewayOpenResponsesAuthMode;
 
 mod audit_runtime;
 mod auth_runtime;
+mod cortex_runtime;
 mod dashboard_status;
 mod deploy_runtime;
 mod jobs_runtime;
@@ -79,6 +80,7 @@ use auth_runtime::{
     authorize_gateway_request, collect_gateway_auth_status_report, enforce_gateway_rate_limit,
     issue_gateway_session_token,
 };
+use cortex_runtime::handle_cortex_chat;
 use dashboard_status::{
     apply_gateway_dashboard_action, collect_gateway_dashboard_snapshot,
     GatewayDashboardActionRequest,
@@ -152,6 +154,7 @@ const GATEWAY_JOB_CANCEL_ENDPOINT_TEMPLATE: &str = "/gateway/jobs/{job_id}/cance
 const GATEWAY_DEPLOY_ENDPOINT: &str = "/gateway/deploy";
 const GATEWAY_AGENT_STOP_ENDPOINT_TEMPLATE: &str = "/gateway/agents/{agent_id}/stop";
 const GATEWAY_UI_TELEMETRY_ENDPOINT: &str = "/gateway/ui/telemetry";
+const CORTEX_CHAT_ENDPOINT: &str = "/cortex/chat";
 const DASHBOARD_HEALTH_ENDPOINT: &str = "/dashboard/health";
 const DASHBOARD_WIDGETS_ENDPOINT: &str = "/dashboard/widgets";
 const DASHBOARD_QUEUE_TIMELINE_ENDPOINT: &str = "/dashboard/queue-timeline";
@@ -851,6 +854,7 @@ fn build_gateway_openresponses_router(state: Arc<GatewayOpenResponsesServerState
             GATEWAY_UI_TELEMETRY_ENDPOINT,
             post(handle_gateway_ui_telemetry),
         )
+        .route(CORTEX_CHAT_ENDPOINT, post(handle_cortex_chat))
         .route(
             EXTERNAL_CODING_AGENT_SESSIONS_ENDPOINT,
             post(handle_external_coding_agent_open_session),
@@ -971,6 +975,7 @@ async fn handle_gateway_status(
                     "deploy_endpoint": GATEWAY_DEPLOY_ENDPOINT,
                     "agent_stop_endpoint_template": GATEWAY_AGENT_STOP_ENDPOINT_TEMPLATE,
                     "ui_telemetry_endpoint": GATEWAY_UI_TELEMETRY_ENDPOINT,
+                    "cortex_chat_endpoint": CORTEX_CHAT_ENDPOINT,
                     "policy_gates": {
                         "session_write": SESSION_WRITE_POLICY_GATE,
                         "memory_write": MEMORY_WRITE_POLICY_GATE,
