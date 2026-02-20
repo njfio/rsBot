@@ -499,7 +499,7 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **Pathway**:
 - [x] Add `fly.toml` to repo root with sensible defaults
 - [x] Document in deployment guide
-- [ ] Add Fly.io to CI/CD pipeline (optional step)
+- [x] Add Fly.io to CI/CD pipeline (optional step) (`#2778`)
 - **Files**: `fly.toml`, `.github/workflows/`
 - **Effort**: Small
 

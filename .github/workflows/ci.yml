@@ -191,6 +191,8 @@ jobs:
               - "scripts/dev/docker-image-smoke.sh"
               - "scripts/dev/test-docker-image-packaging.sh"
               - ".github/workflows/release.yml"
+            fly_ci:
+              - "fly.toml"
             wasm_smoke:
               - "crates/kamn-core/**"
               - "crates/kamn-sdk/**"
@@ -506,6 +508,32 @@ jobs:
           set -euo pipefail
           ./scripts/dev/docker-image-smoke.sh \
             --tag "tau-coding-agent:ci-${{ github.run_id }}-${{ github.run_attempt }}"
+
+      - name: Determine Fly validation scope
+        id: fly_ci_scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          fly_ci_needed="${{ steps.change_scope.outputs.fly_ci }}"
+          if [[ "${{ github.event_name }}" != "pull_request" ]]; then
+            fly_ci_needed="true"
+          elif [[ -z "${fly_ci_needed}" ]]; then
+            fly_ci_needed="false"
+          fi
+          echo "fly_ci_needed=${fly_ci_needed}" >> "$GITHUB_OUTPUT"
+          echo "### Fly CI Scope" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Fly validation needed: ${fly_ci_needed}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install flyctl
+        if: steps.fly_ci_scope.outputs.fly_ci_needed == 'true'
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Validate fly.toml contract
+        if: steps.fly_ci_scope.outputs.fly_ci_needed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          flyctl config validate -c fly.toml
 
       - name: Determine wasm smoke scope
         id: wasm_scope
