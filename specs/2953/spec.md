@@ -1,6 +1,6 @@
 # Spec: Issue #2953 - Wire `/cortex/chat` to LLM with observer context and fallback
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 `/cortex/chat` currently returns deterministic mock output (`render_cortex_output_text`) and does not invoke the configured provider client. This leaves G3 partially closed and blocks real cross-session analytical responses in Cortex admin chat.
