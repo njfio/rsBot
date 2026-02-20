@@ -447,10 +447,10 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 **What**: Interactive force-directed graph showing memory nodes and their relations, built with Sigma.js + Graphology.
 **Why it matters**: Makes the agent's knowledge structure visible and debuggable.
 **Pathway**:
-- [ ] Requires G6 (memory graph relations) first
-- [ ] Add `GET /api/memories/graph` endpoint to gateway returning nodes + edges JSON
-- [ ] Frontend component using Sigma.js or D3.js force layout
-- [ ] Node size by importance, edge color by relation type
+- [x] Requires G6 (memory graph relations) first
+- [x] Add `GET /api/memories/graph` endpoint to gateway returning nodes + edges JSON
+- [x] Frontend component using Sigma.js or D3.js force layout
+- [x] Node size by importance, edge color by relation type
 - **Files**: Gateway routes, frontend component
 - **Effort**: Medium (after G6)
 

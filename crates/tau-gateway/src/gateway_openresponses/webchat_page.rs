@@ -1572,6 +1572,102 @@ pub(super) fn render_gateway_webchat_page() -> String {
       memoryGraphCanvas.setAttribute("viewBox", "0 0 900 340");
     }}
 
+    function graphNodeSeed(nodeId) {{
+      const value = String(nodeId || "");
+      let hash = 2166136261;
+      for (let index = 0; index < value.length; index += 1) {{
+        hash ^= value.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+      }}
+      return (hash >>> 0) / 4294967295;
+    }}
+
+    function clampGraphPosition(value, min, max) {{
+      return Math.max(min, Math.min(max, value));
+    }}
+
+    function computeMemoryGraphForceLayout(nodes, edges, width, height) {{
+      const centerX = width / 2;
+      const centerY = height / 2;
+      const margin = 22;
+      const nodeStates = nodes.map((node, index) => {{
+        const seed = graphNodeSeed(node.id || String(index));
+        const angle = ((2 * Math.PI * index) / Math.max(1, nodes.length)) + (seed * 0.4);
+        const radial = Math.min(width, height) * (0.16 + (0.24 * seed));
+        return {{
+          id: node.id,
+          node: node,
+          x: centerX + (Math.cos(angle) * radial),
+          y: centerY + (Math.sin(angle) * radial),
+          vx: 0,
+          vy: 0
+        }};
+      }});
+      const positions = new Map();
+      for (const state of nodeStates) {{
+        positions.set(state.id, state);
+      }}
+
+      const repulsionStrength = 3600 / Math.max(1, Math.sqrt(nodes.length));
+      const springStrength = 0.015;
+      const centerStrength = 0.006;
+      const damping = 0.86;
+      const minimumDistance = 18;
+      const springLength = Math.max(48, Math.min(130, (width + height) / Math.max(9, nodes.length)));
+      const iterations = 84;
+
+      for (let iteration = 0; iteration < iterations; iteration += 1) {{
+        for (let left = 0; left < nodeStates.length; left += 1) {{
+          for (let right = left + 1; right < nodeStates.length; right += 1) {{
+            const source = nodeStates[left];
+            const target = nodeStates[right];
+            const dx = source.x - target.x;
+            const dy = source.y - target.y;
+            const distanceSquared = Math.max(minimumDistance * minimumDistance, (dx * dx) + (dy * dy));
+            const distance = Math.sqrt(distanceSquared);
+            const force = repulsionStrength / distanceSquared;
+            const fx = (dx / distance) * force;
+            const fy = (dy / distance) * force;
+            source.vx += fx;
+            source.vy += fy;
+            target.vx -= fx;
+            target.vy -= fy;
+          }}
+        }}
+
+        for (const edge of edges) {{
+          const source = positions.get(edge.source);
+          const target = positions.get(edge.target);
+          if (!source || !target) {{
+            continue;
+          }}
+          const dx = target.x - source.x;
+          const dy = target.y - source.y;
+          const distanceSquared = Math.max(minimumDistance * minimumDistance, (dx * dx) + (dy * dy));
+          const distance = Math.sqrt(distanceSquared);
+          const weight = Math.max(0.45, Math.min(2.4, toSafeFloat(edge.weight, 1)));
+          const pull = (distance - springLength) * springStrength * weight;
+          const fx = (dx / distance) * pull;
+          const fy = (dy / distance) * pull;
+          source.vx += fx;
+          source.vy += fy;
+          target.vx -= fx;
+          target.vy -= fy;
+        }}
+
+        for (const state of nodeStates) {{
+          state.vx += (centerX - state.x) * centerStrength;
+          state.vy += (centerY - state.y) * centerStrength;
+          state.vx *= damping;
+          state.vy *= damping;
+          state.x = clampGraphPosition(state.x + state.vx, margin, width - margin);
+          state.y = clampGraphPosition(state.y + state.vy, margin, height - margin);
+        }}
+      }}
+
+      return positions;
+    }}
+
     function renderMemoryGraph(payload) {{
       const svgNs = "http://www.w3.org/2000/svg";
       resetMemoryGraphCanvas();
@@ -1591,17 +1687,7 @@ pub(super) fn render_gateway_webchat_page() -> String {
         return;
       }}
 
-      const centerX = width / 2;
-      const centerY = height / 2;
-      const orbit = Math.min(width, height) * 0.34;
-      const positions = new Map();
-      for (let index = 0; index < nodes.length; index += 1) {{
-        const node = nodes[index];
-        const angle = (2 * Math.PI * index) / nodes.length;
-        const x = centerX + Math.cos(angle) * orbit;
-        const y = centerY + Math.sin(angle) * orbit;
-        positions.set(node.id, {{ x, y, node }});
-      }}
+      const positions = computeMemoryGraphForceLayout(nodes, edges, width, height);
 
       for (const edge of edges) {{
         const source = positions.get(edge.source);
@@ -1629,7 +1715,8 @@ pub(super) fn render_gateway_webchat_page() -> String {
         const circle = document.createElementNS(svgNs, "circle");
         circle.setAttribute("cx", String(placed.x));
         circle.setAttribute("cy", String(placed.y));
-        circle.setAttribute("r", String(Math.max(8, Math.min(24, toSafeFloat(node.size, 12)))));
+        const importanceSignal = Math.max(toSafeFloat(node.weight, 0), toSafeFloat(node.size, 0) / 4);
+        circle.setAttribute("r", String(Math.max(8, Math.min(26, 8 + (importanceSignal * 2.4)))));
         circle.setAttribute("fill", '#d7e9f5');
         circle.setAttribute("stroke", '#1f5574');
         circle.setAttribute("stroke-width", "1.5");
