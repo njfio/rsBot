@@ -245,7 +245,7 @@ Spacebot is a Rust-based AI agent for teams, communities, and multi-user environ
 - [ ] Queries memory store across all sessions
 - [ ] Generates periodic "memory bulletin" via LLM summarization
 - [ ] Bulletin injected into all new session system prompts via `ArcSwap<String>`
-- [ ] Add admin chat endpoint in gateway (`POST /cortex/chat` returning SSE)
+- [x] Add admin chat endpoint in gateway (`POST /cortex/chat` returning SSE)
 - [ ] Track cortex events (memory saves, session starts/ends, worker completions)
 - **Files**: New crate or module, modify `tau-gateway` for admin endpoints
 - **Effort**: Large
