@@ -22,6 +22,9 @@ const REACTION_REASON_INVALID_MESSAGE_ID: &str = "reaction_invalid_message_id";
 const REACTION_REASON_MISSING_EMOJI: &str = "reaction_missing_emoji";
 const FILE_REASON_UNSUPPORTED_TRANSPORT: &str = "file_delivery_unsupported_transport";
 const FILE_REASON_INVALID_URL: &str = "file_delivery_invalid_url";
+const THREAD_REASON_UNSUPPORTED_TRANSPORT: &str = "thread_unsupported_transport";
+const THREAD_REASON_INVALID_NAME: &str = "thread_invalid_name";
+const TYPING_REASON_UNSUPPORTED_TRANSPORT: &str = "typing_unsupported_transport";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Enumerates supported `MultiChannelOutboundMode` values.
@@ -483,6 +486,95 @@ impl MultiChannelOutboundDispatcher {
         })
     }
 
+    /// Public `fn` `deliver_thread` in `tau-multi-channel`.
+    ///
+    /// This item is part of the Wave 2 API surface for M23 documentation uplift.
+    /// Callers rely on its contract and failure semantics remaining stable.
+    /// Update this comment if behavior or integration expectations change.
+    pub async fn deliver_thread(
+        &self,
+        event: &MultiChannelInboundEvent,
+        thread_name: &str,
+    ) -> Result<MultiChannelOutboundDeliveryResult, MultiChannelOutboundDeliveryError> {
+        if self.config.mode == MultiChannelOutboundMode::ChannelStore {
+            return Ok(MultiChannelOutboundDeliveryResult {
+                mode: self.config.mode.as_str().to_string(),
+                chunk_count: 0,
+                receipts: Vec::new(),
+            });
+        }
+
+        let request = self.build_thread_request(event, thread_name)?;
+        let receipt = match self.config.mode {
+            MultiChannelOutboundMode::DryRun => MultiChannelOutboundDeliveryReceipt {
+                transport: request.transport.as_str().to_string(),
+                mode: self.config.mode.as_str().to_string(),
+                status: "dry_run".to_string(),
+                chunk_index: request.chunk_index,
+                chunk_count: request.chunk_count,
+                endpoint: request.endpoint.clone(),
+                request_body: request.body.clone(),
+                reason_code: None,
+                detail: None,
+                retryable: false,
+                http_status: None,
+                provider_message_id: None,
+            },
+            MultiChannelOutboundMode::Provider => self.send_request(&request).await?,
+            MultiChannelOutboundMode::ChannelStore => unreachable!(),
+        };
+
+        Ok(MultiChannelOutboundDeliveryResult {
+            mode: self.config.mode.as_str().to_string(),
+            chunk_count: 1,
+            receipts: vec![receipt],
+        })
+    }
+
+    /// Public `fn` `deliver_typing_indicator` in `tau-multi-channel`.
+    ///
+    /// This item is part of the Wave 2 API surface for M23 documentation uplift.
+    /// Callers rely on its contract and failure semantics remaining stable.
+    /// Update this comment if behavior or integration expectations change.
+    pub async fn deliver_typing_indicator(
+        &self,
+        event: &MultiChannelInboundEvent,
+    ) -> Result<MultiChannelOutboundDeliveryResult, MultiChannelOutboundDeliveryError> {
+        if self.config.mode == MultiChannelOutboundMode::ChannelStore {
+            return Ok(MultiChannelOutboundDeliveryResult {
+                mode: self.config.mode.as_str().to_string(),
+                chunk_count: 0,
+                receipts: Vec::new(),
+            });
+        }
+
+        let request = self.build_typing_indicator_request(event)?;
+        let receipt = match self.config.mode {
+            MultiChannelOutboundMode::DryRun => MultiChannelOutboundDeliveryReceipt {
+                transport: request.transport.as_str().to_string(),
+                mode: self.config.mode.as_str().to_string(),
+                status: "dry_run".to_string(),
+                chunk_index: request.chunk_index,
+                chunk_count: request.chunk_count,
+                endpoint: request.endpoint.clone(),
+                request_body: request.body.clone(),
+                reason_code: None,
+                detail: None,
+                retryable: false,
+                http_status: None,
+                provider_message_id: None,
+            },
+            MultiChannelOutboundMode::Provider => self.send_request(&request).await?,
+            MultiChannelOutboundMode::ChannelStore => unreachable!(),
+        };
+
+        Ok(MultiChannelOutboundDeliveryResult {
+            mode: self.config.mode.as_str().to_string(),
+            chunk_count: 1,
+            receipts: vec![receipt],
+        })
+    }
+
     fn build_requests(
         &self,
         event: &MultiChannelInboundEvent,
@@ -816,6 +908,150 @@ impl MultiChannelOutboundDispatcher {
                 request_body: None,
                 http_status: None,
             }),
+        }
+    }
+
+    fn build_thread_request(
+        &self,
+        event: &MultiChannelInboundEvent,
+        thread_name: &str,
+    ) -> Result<MultiChannelOutboundRequest, MultiChannelOutboundDeliveryError> {
+        let normalized_thread_name = thread_name.trim();
+        if normalized_thread_name.is_empty() {
+            return Err(MultiChannelOutboundDeliveryError {
+                reason_code: THREAD_REASON_INVALID_NAME.to_string(),
+                detail: "thread name must not be empty".to_string(),
+                retryable: false,
+                chunk_index: 1,
+                chunk_count: 1,
+                endpoint: "".to_string(),
+                request_body: None,
+                http_status: None,
+            });
+        }
+
+        match event.transport {
+            MultiChannelTransport::Discord => {
+                let token = self
+                    .config
+                    .discord_bot_token
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        if self.config.mode == MultiChannelOutboundMode::DryRun {
+                            Some("dry-run-discord-token".to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .ok_or_else(|| MultiChannelOutboundDeliveryError {
+                        reason_code: "delivery_missing_discord_bot_token".to_string(),
+                        detail: "Discord outbound requires TAU_DISCORD_BOT_TOKEN or credential-store integration id discord-bot-token".to_string(),
+                        retryable: false,
+                        chunk_index: 1,
+                        chunk_count: 1,
+                        endpoint: "".to_string(),
+                        request_body: None,
+                        http_status: None,
+                    })?;
+                let endpoint = format!(
+                    "{}/channels/{}/messages/{}/threads",
+                    self.config.discord_api_base.trim_end_matches('/'),
+                    event.conversation_id.trim(),
+                    event.event_id.trim()
+                );
+                Ok(MultiChannelOutboundRequest {
+                    method: Method::POST,
+                    transport: event.transport,
+                    endpoint,
+                    headers: vec![("Authorization".to_string(), format!("Bot {}", token))],
+                    body: json!({
+                        "name": normalized_thread_name,
+                    }),
+                    chunk_index: 1,
+                    chunk_count: 1,
+                })
+            }
+            MultiChannelTransport::Telegram | MultiChannelTransport::Whatsapp => {
+                Err(MultiChannelOutboundDeliveryError {
+                    reason_code: THREAD_REASON_UNSUPPORTED_TRANSPORT.to_string(),
+                    detail: format!(
+                        "thread delivery is not supported for {} transport",
+                        event.transport.as_str()
+                    ),
+                    retryable: false,
+                    chunk_index: 1,
+                    chunk_count: 1,
+                    endpoint: "".to_string(),
+                    request_body: None,
+                    http_status: None,
+                })
+            }
+        }
+    }
+
+    fn build_typing_indicator_request(
+        &self,
+        event: &MultiChannelInboundEvent,
+    ) -> Result<MultiChannelOutboundRequest, MultiChannelOutboundDeliveryError> {
+        match event.transport {
+            MultiChannelTransport::Discord => {
+                let token = self
+                    .config
+                    .discord_bot_token
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| {
+                        if self.config.mode == MultiChannelOutboundMode::DryRun {
+                            Some("dry-run-discord-token".to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .ok_or_else(|| MultiChannelOutboundDeliveryError {
+                        reason_code: "delivery_missing_discord_bot_token".to_string(),
+                        detail: "Discord outbound requires TAU_DISCORD_BOT_TOKEN or credential-store integration id discord-bot-token".to_string(),
+                        retryable: false,
+                        chunk_index: 1,
+                        chunk_count: 1,
+                        endpoint: "".to_string(),
+                        request_body: None,
+                        http_status: None,
+                    })?;
+                let endpoint = format!(
+                    "{}/channels/{}/typing",
+                    self.config.discord_api_base.trim_end_matches('/'),
+                    event.conversation_id.trim()
+                );
+                Ok(MultiChannelOutboundRequest {
+                    method: Method::POST,
+                    transport: event.transport,
+                    endpoint,
+                    headers: vec![("Authorization".to_string(), format!("Bot {}", token))],
+                    body: json!({}),
+                    chunk_index: 1,
+                    chunk_count: 1,
+                })
+            }
+            MultiChannelTransport::Telegram | MultiChannelTransport::Whatsapp => {
+                Err(MultiChannelOutboundDeliveryError {
+                    reason_code: TYPING_REASON_UNSUPPORTED_TRANSPORT.to_string(),
+                    detail: format!(
+                        "typing indicator dispatch is not supported for {} transport",
+                        event.transport.as_str()
+                    ),
+                    retryable: false,
+                    chunk_index: 1,
+                    chunk_count: 1,
+                    endpoint: "".to_string(),
+                    request_body: None,
+                    http_status: None,
+                })
+            }
         }
     }
 
@@ -1471,6 +1707,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spec_2766_c01_functional_dry_run_shapes_discord_thread_payload() {
+        let dispatcher = MultiChannelOutboundDispatcher::new(MultiChannelOutboundConfig {
+            mode: MultiChannelOutboundMode::DryRun,
+            max_chars: 100,
+            ..MultiChannelOutboundConfig::default()
+        })
+        .expect("dispatcher");
+        let mut event = sample_event(MultiChannelTransport::Discord);
+        event.conversation_id = "room-88".to_string();
+        event.event_id = "42".to_string();
+        let result = dispatcher
+            .deliver_thread(&event, "incident-war-room")
+            .await
+            .expect("dry-run thread delivery should succeed");
+        assert_eq!(result.mode, "dry_run");
+        assert_eq!(result.chunk_count, 1);
+        assert_eq!(result.receipts[0].status, "dry_run");
+        assert!(result.receipts[0]
+            .endpoint
+            .ends_with("/channels/room-88/messages/42/threads"));
+        assert_eq!(result.receipts[0].request_body["name"], "incident-war-room");
+    }
+
+    #[tokio::test]
     async fn functional_dry_run_shapes_telegram_send_file_payload() {
         let dispatcher = MultiChannelOutboundDispatcher::new(MultiChannelOutboundConfig {
             mode: MultiChannelOutboundMode::DryRun,
@@ -1655,6 +1915,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn spec_2766_c01_integration_provider_mode_posts_discord_thread_request() {
+        let server = MockServer::start();
+        let discord_thread = server.mock(|when, then| {
+            when.method(POST)
+                .path("/channels/room-88/messages/42/threads")
+                .header("authorization", "Bot discord-token")
+                .body_includes("\"name\":\"incident-war-room\"");
+            then.status(200)
+                .json_body(json!({"id": "discord-thread-77", "parent_id": "room-88"}));
+        });
+
+        let dispatcher = MultiChannelOutboundDispatcher::new(MultiChannelOutboundConfig {
+            mode: MultiChannelOutboundMode::Provider,
+            max_chars: 100,
+            discord_api_base: server.base_url(),
+            discord_bot_token: Some("discord-token".to_string()),
+            ssrf_allow_http: true,
+            ssrf_allow_private_network: true,
+            ..MultiChannelOutboundConfig::default()
+        })
+        .expect("dispatcher");
+        let mut event = sample_event(MultiChannelTransport::Discord);
+        event.conversation_id = "room-88".to_string();
+        event.event_id = "42".to_string();
+        let result = dispatcher
+            .deliver_thread(&event, "incident-war-room")
+            .await
+            .expect("provider thread send should succeed");
+        discord_thread.assert_calls(1);
+        assert_eq!(result.chunk_count, 1);
+        assert_eq!(result.receipts[0].status, "sent");
+        assert_eq!(
+            result.receipts[0].provider_message_id.as_deref(),
+            Some("discord-thread-77")
+        );
+        assert!(result.receipts[0]
+            .endpoint
+            .ends_with("/channels/room-88/messages/42/threads"));
+    }
+
+    #[tokio::test]
     async fn spec_2530_c03_integration_provider_mode_posts_telegram_send_file_request() {
         let server = MockServer::start();
         let file_send = server.mock(|when, then| {
@@ -1723,6 +2024,59 @@ mod tests {
             result.receipts[0].provider_message_id.as_deref(),
             Some("55")
         );
+    }
+
+    #[tokio::test]
+    async fn spec_2766_c03_integration_provider_mode_posts_discord_typing_indicator() {
+        let server = MockServer::start();
+        let typing = server.mock(|when, then| {
+            when.method(POST)
+                .path("/channels/room-88/typing")
+                .header("authorization", "Bot discord-token");
+            then.status(204);
+        });
+
+        let dispatcher = MultiChannelOutboundDispatcher::new(MultiChannelOutboundConfig {
+            mode: MultiChannelOutboundMode::Provider,
+            max_chars: 100,
+            discord_api_base: server.base_url(),
+            discord_bot_token: Some("discord-token".to_string()),
+            ssrf_allow_http: true,
+            ssrf_allow_private_network: true,
+            ..MultiChannelOutboundConfig::default()
+        })
+        .expect("dispatcher");
+        let mut event = sample_event(MultiChannelTransport::Discord);
+        event.conversation_id = "room-88".to_string();
+        let result = dispatcher
+            .deliver_typing_indicator(&event)
+            .await
+            .expect("provider typing dispatch should succeed");
+        typing.assert_calls(1);
+        assert_eq!(result.chunk_count, 1);
+        assert_eq!(result.receipts[0].status, "sent");
+        assert!(result.receipts[0]
+            .endpoint
+            .ends_with("/channels/room-88/typing"));
+    }
+
+    #[tokio::test]
+    async fn regression_2766_thread_delivery_reports_unsupported_transport() {
+        let dispatcher = MultiChannelOutboundDispatcher::new(MultiChannelOutboundConfig {
+            mode: MultiChannelOutboundMode::DryRun,
+            max_chars: 100,
+            ..MultiChannelOutboundConfig::default()
+        })
+        .expect("dispatcher");
+        let error = dispatcher
+            .deliver_thread(
+                &sample_event(MultiChannelTransport::Telegram),
+                "incident-room",
+            )
+            .await
+            .expect_err("telegram thread should fail");
+        assert_eq!(error.reason_code, "thread_unsupported_transport");
+        assert!(!error.retryable);
     }
 
     #[tokio::test]

@@ -26,6 +26,7 @@ use crate::multi_channel_media::{
 };
 use crate::multi_channel_outbound::{
     MultiChannelOutboundConfig, MultiChannelOutboundDeliveryError, MultiChannelOutboundDispatcher,
+    MultiChannelOutboundMode,
 };
 use crate::multi_channel_policy::{
     evaluate_multi_channel_channel_policy, load_multi_channel_policy_for_state_dir,
@@ -81,6 +82,7 @@ const COMMAND_STATUS_FAILED: &str = "failed";
 const COMMAND_STATUS_SKIPPED: &str = "skipped";
 const COMMAND_STATUS_REACTED: &str = "reacted";
 const COMMAND_STATUS_SENT_FILE: &str = "sent_file";
+const COMMAND_STATUS_THREAD_CREATED: &str = "thread_created";
 const COMMAND_REASON_UNKNOWN: &str = "command_unknown";
 const COMMAND_REASON_INVALID_ARGS: &str = "command_invalid_args";
 const COMMAND_REASON_RBAC_DENIED: &str = "command_rbac_denied";
@@ -109,6 +111,11 @@ const COMMAND_REASON_SEND_FILE_UNSUPPORTED_TRANSPORT: &str =
     "command_send_file_unsupported_transport";
 const COMMAND_REASON_SEND_FILE_INVALID_URL: &str = "command_send_file_invalid_url";
 const COMMAND_REASON_SEND_FILE_FAILED: &str = "command_send_file_failed";
+const COMMAND_REASON_THREAD_REQUESTED: &str = "command_thread_requested";
+const COMMAND_REASON_THREAD_DISPATCHED: &str = "command_thread_dispatched";
+const COMMAND_REASON_THREAD_UNSUPPORTED_TRANSPORT: &str = "command_thread_unsupported_transport";
+const COMMAND_REASON_THREAD_INVALID_NAME: &str = "command_thread_invalid_name";
+const COMMAND_REASON_THREAD_FAILED: &str = "command_thread_failed";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Enumerates supported `MultiChannelPairingDecision` values.
@@ -425,6 +432,9 @@ enum MultiChannelTauCommand {
         url: String,
         caption: Option<String>,
     },
+    Thread {
+        name: String,
+    },
     AuthStatus {
         provider: Option<String>,
     },
@@ -456,6 +466,7 @@ struct MultiChannelCommandExecution {
     react_message_id: Option<String>,
     send_file_url: Option<String>,
     send_file_caption: Option<String>,
+    thread_name: Option<String>,
 }
 
 /// Public `fn` `run_multi_channel_contract_runner` in `tau-multi-channel`.
@@ -1130,6 +1141,9 @@ impl MultiChannelRuntime {
             MultiChannelTauCommand::SendFile { url, caption } => Some(
                 build_multi_channel_command_send_file_execution(url.as_str(), caption.as_deref()),
             ),
+            MultiChannelTauCommand::Thread { name } => {
+                Some(build_multi_channel_command_thread_execution(name.as_str()))
+            }
             MultiChannelTauCommand::AuthStatus { provider } => {
                 let Some(auth_handler) = &self.config.command_handlers.auth else {
                     let response = "command unavailable: auth status handler is not configured.";
@@ -1399,6 +1413,8 @@ impl MultiChannelRuntime {
             let mut file_delivery_error_payload: Option<Value> = None;
             let mut reaction_delivery_payload: Option<Value> = None;
             let mut reaction_delivery_error_payload: Option<Value> = None;
+            let mut thread_delivery_payload: Option<Value> = None;
+            let mut thread_delivery_error_payload: Option<Value> = None;
             if let Some(execution) = command_execution.as_ref() {
                 if let Some(url) = execution.send_file_url.as_deref() {
                     let caption = execution.send_file_caption.as_deref();
@@ -1455,6 +1471,35 @@ impl MultiChannelRuntime {
                             )
                             .to_string();
                             reaction_delivery_error_payload = Some(json!({
+                                "reason_code": error.reason_code,
+                                "detail": error.detail,
+                                "retryable": error.retryable,
+                                "endpoint": error.endpoint,
+                                "http_status": error.http_status,
+                            }));
+                        }
+                    }
+                } else if let Some(thread_name) = execution.thread_name.as_deref() {
+                    match self
+                        .outbound_dispatcher
+                        .deliver_thread(event, thread_name)
+                        .await
+                    {
+                        Ok(delivery) => {
+                            command_status = COMMAND_STATUS_THREAD_CREATED.to_string();
+                            command_reason_code = COMMAND_REASON_THREAD_DISPATCHED.to_string();
+                            thread_delivery_payload = Some(
+                                serde_json::to_value(&delivery)
+                                    .context("serialize thread delivery payload")?,
+                            );
+                        }
+                        Err(error) => {
+                            command_status = COMMAND_STATUS_FAILED.to_string();
+                            command_reason_code = command_reason_code_from_thread_delivery_error(
+                                error.reason_code.as_str(),
+                            )
+                            .to_string();
+                            thread_delivery_error_payload = Some(json!({
                                 "reason_code": error.reason_code,
                                 "detail": error.detail,
                                 "retryable": error.retryable,
@@ -1531,6 +1576,22 @@ impl MultiChannelRuntime {
                     );
                 }
             }
+            if let Some(thread_delivery_payload) = thread_delivery_payload.as_ref() {
+                if let Value::Object(map) = &mut payload {
+                    map.insert(
+                        "thread_delivery".to_string(),
+                        thread_delivery_payload.clone(),
+                    );
+                }
+            }
+            if let Some(thread_delivery_error_payload) = thread_delivery_error_payload.as_ref() {
+                if let Value::Object(map) = &mut payload {
+                    map.insert(
+                        "thread_delivery_error".to_string(),
+                        thread_delivery_error_payload.clone(),
+                    );
+                }
+            }
             if let Some(skip_reason) = command_execution
                 .as_ref()
                 .and_then(|execution| execution.skip_reason.as_ref())
@@ -1562,12 +1623,8 @@ impl MultiChannelRuntime {
                 event_key,
                 TELEMETRY_STATUS_TYPING_STARTED,
             ) {
-                store.append_log_entry(&ChannelLogEntry {
-                    timestamp_unix_ms: current_unix_timestamp_ms(),
-                    direction: "outbound".to_string(),
-                    event_key: Some(event_key.to_string()),
-                    source: "tau-multi-channel-runner".to_string(),
-                    payload: build_telemetry_lifecycle_payload(&TelemetryLifecyclePayloadContext {
+                let mut payload =
+                    build_telemetry_lifecycle_payload(&TelemetryLifecyclePayloadContext {
                         status: TELEMETRY_STATUS_TYPING_STARTED,
                         telemetry_kind: "typing",
                         telemetry_state: "started",
@@ -1576,7 +1633,44 @@ impl MultiChannelRuntime {
                         event_key,
                         route_decision,
                         include_identifiers: self.config.telemetry.include_identifiers,
-                    }),
+                    });
+                if event.transport == MultiChannelTransport::Discord
+                    && self.outbound_dispatcher.mode() == MultiChannelOutboundMode::Provider
+                {
+                    match self
+                        .outbound_dispatcher
+                        .deliver_typing_indicator(event)
+                        .await
+                    {
+                        Ok(delivery) => {
+                            let delivery_payload = serde_json::to_value(&delivery)
+                                .context("serialize typing delivery payload")?;
+                            if let Value::Object(map) = &mut payload {
+                                map.insert("typing_delivery".to_string(), delivery_payload);
+                            }
+                        }
+                        Err(error) => {
+                            if let Value::Object(map) = &mut payload {
+                                map.insert(
+                                    "typing_delivery_error".to_string(),
+                                    json!({
+                                        "reason_code": error.reason_code,
+                                        "detail": error.detail,
+                                        "retryable": error.retryable,
+                                        "endpoint": error.endpoint,
+                                        "http_status": error.http_status,
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                }
+                store.append_log_entry(&ChannelLogEntry {
+                    timestamp_unix_ms: current_unix_timestamp_ms(),
+                    direction: "outbound".to_string(),
+                    event_key: Some(event_key.to_string()),
+                    source: "tau-multi-channel-runner".to_string(),
+                    payload,
                 })?;
                 self.record_typing_telemetry(event.transport.as_str());
                 outcome.typing_events_emitted = outcome.typing_events_emitted.saturating_add(1);
@@ -2220,6 +2314,16 @@ fn parse_multi_channel_tau_command(
             };
             Ok(Some(MultiChannelTauCommand::SendFile { url, caption }))
         }
+        "thread" => {
+            let name = tokens
+                .filter(|token| !token.trim().is_empty())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if name.is_empty() {
+                return Err(COMMAND_REASON_INVALID_ARGS.to_string());
+            }
+            Ok(Some(MultiChannelTauCommand::Thread { name }))
+        }
         "auth" => {
             let Some(action) = tokens.next() else {
                 return Err(COMMAND_REASON_INVALID_ARGS.to_string());
@@ -2386,6 +2490,7 @@ fn render_multi_channel_tau_command_line(command: &MultiChannelTauCommand) -> St
                 format!("send-file {}", url.trim())
             }
         }
+        MultiChannelTauCommand::Thread { name } => format!("thread {}", name.trim()),
         MultiChannelTauCommand::AuthStatus { provider } => {
             if let Some(provider) = provider.as_deref() {
                 format!("auth status {provider}")
@@ -2412,6 +2517,7 @@ fn render_multi_channel_tau_command_help() -> String {
         "- /tau skip [reason]",
         "- /tau react <emoji> [message_id]",
         "- /tau send-file <https-url> [caption]",
+        "- /tau thread <name>",
         "- /tau auth status [openai|anthropic|google]",
         "- /tau doctor [--online]",
         "- /tau approvals list [--json] [--status pending|approved|rejected|expired|consumed]",
@@ -2459,6 +2565,7 @@ fn build_multi_channel_command_execution(
         react_message_id: None,
         send_file_url: None,
         send_file_caption: None,
+        thread_name: None,
     }
 }
 
@@ -2486,6 +2593,7 @@ fn build_multi_channel_command_skip_execution(
         react_message_id: None,
         send_file_url: None,
         send_file_caption: None,
+        thread_name: None,
     }
 }
 
@@ -2518,6 +2626,7 @@ fn build_multi_channel_command_react_execution(
         react_message_id: normalized_message_id.map(ToOwned::to_owned),
         send_file_url: None,
         send_file_caption: None,
+        thread_name: None,
     }
 }
 
@@ -2548,6 +2657,24 @@ fn build_multi_channel_command_send_file_execution(
         react_message_id: None,
         send_file_url: Some(normalized_url.to_string()),
         send_file_caption: normalized_caption.map(ToOwned::to_owned),
+        thread_name: None,
+    }
+}
+
+fn build_multi_channel_command_thread_execution(name: &str) -> MultiChannelCommandExecution {
+    let normalized_name = name.trim();
+    MultiChannelCommandExecution {
+        command_line: format!("thread {normalized_name}"),
+        status: COMMAND_STATUS_REPORTED.to_string(),
+        reason_code: COMMAND_REASON_THREAD_REQUESTED.to_string(),
+        response_text: format!("thread command queued for dispatch: name={normalized_name}"),
+        suppress_outbound_delivery: true,
+        skip_reason: None,
+        react_emoji: None,
+        react_message_id: None,
+        send_file_url: None,
+        send_file_caption: None,
+        thread_name: Some(normalized_name.to_string()),
     }
 }
 
@@ -2578,6 +2705,14 @@ fn command_reason_code_from_file_delivery_error(reason_code: &str) -> &'static s
         "file_delivery_unsupported_transport" => COMMAND_REASON_SEND_FILE_UNSUPPORTED_TRANSPORT,
         "file_delivery_invalid_url" => COMMAND_REASON_SEND_FILE_INVALID_URL,
         _ => COMMAND_REASON_SEND_FILE_FAILED,
+    }
+}
+
+fn command_reason_code_from_thread_delivery_error(reason_code: &str) -> &'static str {
+    match reason_code {
+        "thread_unsupported_transport" => COMMAND_REASON_THREAD_UNSUPPORTED_TRANSPORT,
+        "thread_invalid_name" => COMMAND_REASON_THREAD_INVALID_NAME,
+        _ => COMMAND_REASON_THREAD_FAILED,
     }
 }
 
@@ -2617,6 +2752,14 @@ fn multi_channel_command_payload(execution: &MultiChannelCommandExecution) -> Va
             map.insert(
                 "send_file_caption".to_string(),
                 Value::String(caption.clone()),
+            );
+        }
+    }
+    if let Some(thread_name) = execution.thread_name.as_ref() {
+        if let Value::Object(map) = &mut payload {
+            map.insert(
+                "thread_name".to_string(),
+                Value::String(thread_name.clone()),
             );
         }
     }

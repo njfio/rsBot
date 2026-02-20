@@ -8,7 +8,7 @@ use anyhow::{bail, Context, Result};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use ed25519_dalek::{Signer, SigningKey};
-use httpmock::Method::POST;
+use httpmock::Method::{PATCH, POST};
 use httpmock::MockServer;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -1061,6 +1061,21 @@ fn unit_parse_multi_channel_tau_command_supports_initial_command_set() {
         super::render_multi_channel_tau_command_line(&send_file_command),
         "send-file https://example.com/report.pdf Q1 report"
     );
+    let parsed_thread =
+        super::parse_multi_channel_tau_command("/tau thread incident war room").expect("parse");
+    assert_eq!(
+        parsed_thread,
+        Some(super::MultiChannelTauCommand::Thread {
+            name: "incident war room".to_string(),
+        })
+    );
+    let thread_command = super::parse_multi_channel_tau_command("/tau thread incident war room")
+        .expect("parse")
+        .expect("thread command");
+    assert_eq!(
+        super::render_multi_channel_tau_command_line(&thread_command),
+        "thread incident war room"
+    );
     assert_eq!(
         super::parse_multi_channel_tau_command("plain text").expect("parse"),
         None
@@ -1115,6 +1130,11 @@ fn regression_parse_multi_channel_tau_command_rejects_invalid_forms() {
             .expect_err("non-https url should fail"),
         "command_invalid_args"
     );
+    assert_eq!(
+        super::parse_multi_channel_tau_command("/tau thread")
+            .expect_err("missing thread name should fail"),
+        "command_invalid_args"
+    );
 }
 
 #[test]
@@ -1123,6 +1143,7 @@ fn spec_c04_render_multi_channel_tau_command_help_includes_skip_command() {
     assert!(help.contains("- /tau skip [reason]"));
     assert!(help.contains("- /tau react <emoji> [message_id]"));
     assert!(help.contains("- /tau send-file <https-url> [caption]"));
+    assert!(help.contains("- /tau thread <name>"));
 }
 
 #[tokio::test]
@@ -1477,6 +1498,123 @@ async fn functional_runner_tau_send_file_reports_unsupported_transport_without_t
     assert!(
         !contexts.iter().any(|entry| entry.role == "assistant"),
         "failed send-file command should not persist assistant response text"
+    );
+}
+
+#[tokio::test]
+async fn functional_spec_2766_c02_runner_executes_tau_thread_command_and_records_delivery() {
+    let temp = tempdir().expect("tempdir");
+    let mut config = build_config(temp.path());
+    config.outbound.mode = MultiChannelOutboundMode::DryRun;
+    let mut runtime = MultiChannelRuntime::new(config).expect("runtime");
+    let event = sample_event(
+        MultiChannelTransport::Discord,
+        "42",
+        "discord-command-room",
+        "discord-user-1",
+        "/tau thread incident war room",
+    );
+
+    let summary = runtime.run_once_events(&[event]).await.expect("run once");
+    assert_eq!(summary.completed_events, 1);
+    assert_eq!(summary.failed_events, 0);
+
+    let store = ChannelStore::open(
+        &temp.path().join(".tau/multi-channel/channel-store"),
+        "discord",
+        "discord-command-room",
+    )
+    .expect("open store");
+    let logs = store.load_log_entries().expect("load logs");
+    let thread_entry = logs
+        .iter()
+        .find(|entry| {
+            entry.direction == "outbound"
+                && entry.payload["status"].as_str() == Some("thread_created")
+                && entry
+                    .payload
+                    .get("command")
+                    .and_then(Value::as_object)
+                    .is_some()
+        })
+        .expect("thread outbound log entry");
+    assert_eq!(
+        thread_entry.payload["command"]["reason_code"].as_str(),
+        Some("command_thread_dispatched")
+    );
+    assert_eq!(
+        thread_entry.payload["command"]["thread_name"].as_str(),
+        Some("incident war room")
+    );
+    assert_eq!(
+        thread_entry.payload["thread_delivery"]["mode"].as_str(),
+        Some("dry_run")
+    );
+
+    let contexts = store.load_context_entries().expect("load context");
+    assert!(
+        contexts
+            .iter()
+            .any(|entry| entry.role == "user" && entry.text == "/tau thread incident war room"),
+        "thread command should preserve user context entry for auditability"
+    );
+    assert!(
+        !contexts.iter().any(|entry| entry.role == "assistant"),
+        "thread command should not persist assistant response text"
+    );
+}
+
+#[tokio::test]
+async fn regression_spec_2766_c04_runner_tau_thread_reports_unsupported_transport_without_text_reply(
+) {
+    let temp = tempdir().expect("tempdir");
+    let mut config = build_config(temp.path());
+    config.outbound.mode = MultiChannelOutboundMode::DryRun;
+    let mut runtime = MultiChannelRuntime::new(config).expect("runtime");
+    let event = sample_event(
+        MultiChannelTransport::Whatsapp,
+        "wa-command-thread-1",
+        "15551230000",
+        "15551235555",
+        "/tau thread incident-room",
+    );
+
+    let summary = runtime.run_once_events(&[event]).await.expect("run once");
+    assert_eq!(summary.completed_events, 1);
+    assert_eq!(summary.failed_events, 0);
+
+    let store = ChannelStore::open(
+        &temp.path().join(".tau/multi-channel/channel-store"),
+        "whatsapp",
+        "15551230000",
+    )
+    .expect("open store");
+    let logs = store.load_log_entries().expect("load logs");
+    let failed_entry = logs
+        .iter()
+        .find(|entry| {
+            entry.direction == "outbound"
+                && entry.payload["status"].as_str() == Some("failed")
+                && entry
+                    .payload
+                    .get("command")
+                    .and_then(Value::as_object)
+                    .is_some()
+        })
+        .expect("failed thread outbound log entry");
+    assert_eq!(
+        failed_entry.payload["reason_code"].as_str(),
+        Some("command_thread_unsupported_transport")
+    );
+    assert_eq!(
+        failed_entry.payload["command"]["thread_name"].as_str(),
+        Some("incident-room")
+    );
+
+    let contexts = store.load_context_entries().expect("load context");
+    assert!(
+        !contexts.iter().any(|entry| entry.role == "assistant"),
+        "failed thread command should not persist assistant response text"
     );
 }
 
@@ -2953,6 +3091,80 @@ async fn integration_spec_2509_c03_coalesced_batch_forces_typing_lifecycle_signa
 }
 
 #[tokio::test]
+async fn integration_spec_2766_c03_runner_provider_dispatches_discord_typing_indicator() {
+    let server = MockServer::start();
+    let typing = server.mock(|when, then| {
+        when.method(POST)
+            .path("/channels/discord-typing-room/typing")
+            .header("authorization", "Bot discord-token");
+        then.status(204);
+    });
+    let placeholder = server.mock(|when, then| {
+        when.method(POST)
+            .path("/channels/discord-typing-room/messages")
+            .header("authorization", "Bot discord-token")
+            .json_body(json!({"content":"..."}));
+        then.status(200)
+            .json_body(json!({"id":"discord-message-typing"}));
+    });
+    let patch = server.mock(|when, then| {
+        when.method(PATCH)
+            .path("/channels/discord-typing-room/messages/discord-message-typing")
+            .header("authorization", "Bot discord-token");
+        then.status(200)
+            .json_body(json!({"id":"discord-message-typing"}));
+    });
+
+    let temp = tempdir().expect("tempdir");
+    let mut config = build_config(temp.path());
+    config.outbound.mode = MultiChannelOutboundMode::Provider;
+    config.outbound.discord_api_base = server.base_url();
+    config.outbound.discord_bot_token = Some("discord-token".to_string());
+    config.outbound.ssrf_allow_http = true;
+    config.outbound.ssrf_allow_private_network = true;
+    config.telemetry.typing_presence_min_response_chars = 1;
+    let event = sample_event(
+        MultiChannelTransport::Discord,
+        "dc-typing-provider-1",
+        "discord-typing-room",
+        "discord-user-1",
+        "typing enabled provider flow",
+    );
+
+    let mut runtime = MultiChannelRuntime::new(config.clone()).expect("runtime");
+    let summary = runtime.run_once_events(&[event]).await.expect("run once");
+    assert_eq!(summary.completed_events, 1);
+    assert_eq!(summary.failed_events, 0);
+    assert_eq!(summary.typing_events_emitted, 2);
+    typing.assert_calls(1);
+    placeholder.assert_calls(1);
+    patch.assert_calls(1);
+
+    let store = ChannelStore::open(
+        &config.state_dir.join("channel-store"),
+        "discord",
+        "discord-typing-room",
+    )
+    .expect("open store");
+    let logs = store.load_log_entries().expect("load logs");
+    let typing_started = logs
+        .iter()
+        .find(|entry| entry.payload["status"].as_str() == Some("typing_started"))
+        .expect("typing started log entry");
+    assert_eq!(
+        typing_started.payload["typing_delivery"]["mode"].as_str(),
+        Some("provider")
+    );
+    assert!(
+        typing_started
+            .payload
+            .get("typing_delivery_error")
+            .is_none(),
+        "typing dispatch should not emit an error payload on success"
+    );
+}
+
+#[tokio::test]
 async fn integration_runner_provider_outbound_posts_per_transport_adapter() {
     struct Scenario<'a> {
         transport: MultiChannelTransport,
@@ -2998,6 +3210,17 @@ async fn integration_runner_provider_outbound_posts_per_transport_adapter() {
                 .header("content-type", "application/json")
                 .body(scenario.response_body);
         });
+        let discord_patch = if scenario.transport == MultiChannelTransport::Discord {
+            let patch_path = format!("/channels/{}/messages/msg-22", scenario.conversation_id);
+            Some(server.mock(|when, then| {
+                when.method(PATCH).path(patch_path.as_str());
+                then.status(200)
+                    .header("content-type", "application/json")
+                    .body(r#"{"id":"msg-22"}"#);
+            }))
+        } else {
+            None
+        };
 
         let temp = tempdir().expect("tempdir");
         let mut config = build_config(temp.path());
@@ -3033,6 +3256,9 @@ async fn integration_runner_provider_outbound_posts_per_transport_adapter() {
         assert_eq!(summary.failed_events, 0);
         assert_eq!(summary.usage_summary_records, 1);
         sent.assert_calls(1);
+        if let Some(discord_patch) = discord_patch {
+            discord_patch.assert_calls(1);
+        }
 
         let store = ChannelStore::open(
             &config.state_dir.join("channel-store"),
