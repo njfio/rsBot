@@ -93,7 +93,7 @@ fn is_compatible_prompt_telemetry_record(value: &Value) -> bool {
     match record_type {
         PROMPT_TELEMETRY_RECORD_TYPE_V1 => schema_version
             .map(|version| version == PROMPT_TELEMETRY_SCHEMA_VERSION)
-            .unwrap_or(true),
+            .unwrap_or(false),
         PROMPT_TELEMETRY_RECORD_TYPE_LEGACY_V0 => {
             schema_version.map(|version| version == 0).unwrap_or(true)
         }
@@ -2044,6 +2044,57 @@ mod tests {
         assert_eq!(summary.prompt_record_count, 0);
         assert_eq!(summary.tool_event_count, 1);
         assert!(summary.providers.is_empty());
+    }
+
+    // Regression: #3180
+    #[test]
+    fn spec_3180_c01_summarize_audit_file_rejects_v1_prompt_records_without_schema_version() {
+        let (_temp, path) = write_audit_fixture(&[
+            serde_json::json!({
+                "record_type": PROMPT_TELEMETRY_RECORD_TYPE_V1,
+                "provider": "openai",
+                "status": "completed",
+                "success": true,
+                "duration_ms": 11,
+                "token_usage": {
+                    "input_tokens": 5,
+                    "output_tokens": 7,
+                    "total_tokens": 12
+                }
+            }),
+            serde_json::json!({
+                "event": "tool_execution_end",
+                "tool_name": "memory_search",
+                "is_error": false,
+                "duration_ms": 6
+            }),
+        ]);
+        let summary = summarize_audit_file(&path).expect("summarize");
+        assert_eq!(summary.record_count, 2);
+        assert_eq!(summary.prompt_record_count, 0);
+        assert_eq!(summary.tool_event_count, 1);
+        assert!(summary.providers.is_empty());
+    }
+
+    #[test]
+    fn spec_3180_c02_summarize_audit_file_keeps_legacy_prompt_telemetry_compatibility() {
+        let (_temp, path) = write_audit_fixture(&[serde_json::json!({
+            "record_type": PROMPT_TELEMETRY_RECORD_TYPE_LEGACY_V0,
+            "provider": "openai",
+            "status": "completed",
+            "duration_ms": 8,
+            "token_usage": {
+                "input_tokens": 3,
+                "output_tokens": 4,
+                "total_tokens": 7
+            }
+        })]);
+        let summary = summarize_audit_file(&path).expect("summarize");
+        assert_eq!(summary.record_count, 1);
+        assert_eq!(summary.prompt_record_count, 1);
+        let provider = summary.providers.get("openai").expect("provider aggregate");
+        assert_eq!(provider.count, 1);
+        assert_eq!(provider.total_tokens, 7);
     }
 
     #[test]
