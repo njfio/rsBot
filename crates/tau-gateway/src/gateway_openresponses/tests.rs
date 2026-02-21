@@ -3040,6 +3040,42 @@ async fn integration_spec_3128_c03_ops_channels_route_renders_channel_health_con
 }
 
 #[tokio::test]
+async fn integration_spec_3132_c03_ops_channels_route_renders_channel_action_contracts() {
+    let temp = tempdir().expect("tempdir");
+    write_dashboard_runtime_fixture(temp.path());
+    write_training_runtime_fixture(temp.path(), 0);
+    write_multi_channel_runtime_fixture(temp.path(), true);
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/channels?theme=light&sidebar=collapsed&session=ops-channels-actions"
+        ))
+        .send()
+        .await
+        .expect("load ops channels actions route");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response
+        .text()
+        .await
+        .expect("read ops channels actions route body");
+
+    assert!(body.contains(
+        "id=\"tau-ops-channels-login-0\" data-action=\"channel-login\" data-channel=\"telegram\" data-action-enabled=\"false\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-channels-logout-0\" data-action=\"channel-logout\" data-channel=\"telegram\" data-action-enabled=\"true\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-channels-probe-0\" data-action=\"channel-probe\" data-channel=\"telegram\" data-action-enabled=\"true\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2798_c04_ops_shell_exposes_responsive_and_theme_contract_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");

@@ -2091,6 +2091,77 @@ fn regression_spec_3128_c04_non_channels_routes_keep_hidden_channels_markers() {
 }
 
 #[test]
+fn functional_spec_3132_c01_c02_channels_route_renders_channel_action_markers() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::Channels,
+        theme: TauOpsDashboardTheme::Light,
+        sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        command_center: TauOpsDashboardCommandCenterSnapshot {
+            connector_health_rows: vec![
+                TauOpsDashboardConnectorHealthRow {
+                    channel: "telegram".to_string(),
+                    mode: "polling".to_string(),
+                    liveness: "open".to_string(),
+                    events_ingested: 6,
+                    provider_failures: 2,
+                },
+                TauOpsDashboardConnectorHealthRow {
+                    channel: "discord".to_string(),
+                    mode: "gateway".to_string(),
+                    liveness: "offline".to_string(),
+                    events_ingested: 0,
+                    provider_failures: 1,
+                },
+            ],
+            ..TauOpsDashboardCommandCenterSnapshot::default()
+        },
+        chat: TauOpsDashboardChatSnapshot::default(),
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-channels-login-0\" data-action=\"channel-login\" data-channel=\"telegram\" data-action-enabled=\"false\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-channels-logout-0\" data-action=\"channel-logout\" data-channel=\"telegram\" data-action-enabled=\"true\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-channels-probe-0\" data-action=\"channel-probe\" data-channel=\"telegram\" data-action-enabled=\"true\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-channels-login-1\" data-action=\"channel-login\" data-channel=\"discord\" data-action-enabled=\"true\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-channels-logout-1\" data-action=\"channel-logout\" data-channel=\"discord\" data-action-enabled=\"false\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-channels-probe-1\" data-action=\"channel-probe\" data-channel=\"discord\" data-action-enabled=\"true\""
+    ));
+}
+
+#[test]
+fn regression_spec_3132_c04_non_channels_routes_keep_hidden_channel_action_markers() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::Chat,
+        theme: TauOpsDashboardTheme::Dark,
+        sidebar_state: TauOpsDashboardSidebarState::Expanded,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot::default(),
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-channels-login-0\" data-action=\"channel-login\" data-channel=\"none\" data-action-enabled=\"true\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-channels-logout-0\" data-action=\"channel-logout\" data-channel=\"none\" data-action-enabled=\"false\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-channels-probe-0\" data-action=\"channel-probe\" data-channel=\"none\" data-action-enabled=\"true\""
+    ));
+}
+
+#[test]
 fn functional_spec_2838_c01_c02_c03_sessions_route_renders_sessions_panel_list_rows_and_links() {
     let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
         auth_mode: TauOpsDashboardAuthMode::Token,
