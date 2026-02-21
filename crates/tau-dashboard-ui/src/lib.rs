@@ -319,6 +319,23 @@ pub struct TauOpsDashboardToolInventoryRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TauOpsDashboardToolUsageHistogramRow` in `tau-dashboard-ui`.
+pub struct TauOpsDashboardToolUsageHistogramRow {
+    pub hour_offset: u8,
+    pub call_count: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TauOpsDashboardToolInvocationRow` in `tau-dashboard-ui`.
+pub struct TauOpsDashboardToolInvocationRow {
+    pub timestamp_unix_ms: u64,
+    pub args_summary: String,
+    pub result_summary: String,
+    pub duration_ms: u64,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Public struct `TauOpsDashboardChatSnapshot` in `tau-dashboard-ui`.
 pub struct TauOpsDashboardChatSnapshot {
     pub active_session_key: String,
@@ -386,6 +403,14 @@ pub struct TauOpsDashboardChatSnapshot {
     pub memory_graph_node_rows: Vec<TauOpsDashboardMemoryGraphNodeRow>,
     pub memory_graph_edge_rows: Vec<TauOpsDashboardMemoryGraphEdgeRow>,
     pub tools_inventory_rows: Vec<TauOpsDashboardToolInventoryRow>,
+    pub tool_detail_selected_tool_name: String,
+    pub tool_detail_description: String,
+    pub tool_detail_parameter_schema: String,
+    pub tool_detail_policy_timeout_ms: u64,
+    pub tool_detail_policy_max_output_chars: u64,
+    pub tool_detail_policy_sandbox_mode: String,
+    pub tool_detail_usage_histogram_rows: Vec<TauOpsDashboardToolUsageHistogramRow>,
+    pub tool_detail_recent_invocation_rows: Vec<TauOpsDashboardToolInvocationRow>,
 }
 
 impl Default for TauOpsDashboardChatSnapshot {
@@ -463,6 +488,14 @@ impl Default for TauOpsDashboardChatSnapshot {
             memory_graph_node_rows: vec![],
             memory_graph_edge_rows: vec![],
             tools_inventory_rows: vec![],
+            tool_detail_selected_tool_name: String::new(),
+            tool_detail_description: String::new(),
+            tool_detail_parameter_schema: "{}".to_string(),
+            tool_detail_policy_timeout_ms: 120_000,
+            tool_detail_policy_max_output_chars: 32_768,
+            tool_detail_policy_sandbox_mode: "default".to_string(),
+            tool_detail_usage_histogram_rows: vec![],
+            tool_detail_recent_invocation_rows: vec![],
         }
     }
 }
@@ -1303,6 +1336,108 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                             <td>{row.error_rate.clone()}</td>
                             <td>{row.avg_latency_ms.clone()}</td>
                             <td>{last_used_unix_ms}</td>
+                        </tr>
+                    }
+                })
+                .collect_view(),
+        )
+    };
+    let tool_detail_selected_tool_name = {
+        let selected = context.chat.tool_detail_selected_tool_name.trim();
+        if !selected.is_empty() {
+            selected.to_string()
+        } else {
+            tools_inventory_rows
+                .first()
+                .map(|row| row.tool_name.clone())
+                .unwrap_or_default()
+        }
+    };
+    let tool_detail_visible = if matches!(context.active_route, TauOpsDashboardRoute::ToolsJobs)
+        && !tool_detail_selected_tool_name.is_empty()
+    {
+        "true"
+    } else {
+        "false"
+    };
+    let tool_detail_description = if context.chat.tool_detail_description.trim().is_empty() {
+        "No tool selected.".to_string()
+    } else {
+        context.chat.tool_detail_description.clone()
+    };
+    let tool_detail_parameter_schema =
+        if context.chat.tool_detail_parameter_schema.trim().is_empty() {
+            "{}".to_string()
+        } else {
+            context.chat.tool_detail_parameter_schema.clone()
+        };
+    let tool_detail_policy_timeout_ms = context.chat.tool_detail_policy_timeout_ms.to_string();
+    let tool_detail_policy_max_output_chars =
+        context.chat.tool_detail_policy_max_output_chars.to_string();
+    let tool_detail_policy_sandbox_mode = if context.chat.tool_detail_policy_sandbox_mode.is_empty()
+    {
+        "default".to_string()
+    } else {
+        context.chat.tool_detail_policy_sandbox_mode.clone()
+    };
+    let tool_detail_usage_histogram_rows = context.chat.tool_detail_usage_histogram_rows.clone();
+    let tool_detail_usage_bucket_count = tool_detail_usage_histogram_rows.len().to_string();
+    let tool_detail_usage_histogram_view = if tool_detail_usage_histogram_rows.is_empty() {
+        leptos::either::Either::Left(view! {
+            <li id="tau-ops-tool-detail-usage-empty-state" data-empty-state="true">
+                No usage histogram buckets available.
+            </li>
+        })
+    } else {
+        leptos::either::Either::Right(
+            tool_detail_usage_histogram_rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| {
+                    let row_id = format!("tau-ops-tool-detail-usage-bucket-{index}");
+                    let hour_offset = row.hour_offset.to_string();
+                    let call_count = row.call_count.to_string();
+                    view! {
+                        <li id=row_id data-hour-offset=hour_offset data-call-count=call_count></li>
+                    }
+                })
+                .collect_view(),
+        )
+    };
+    let tool_detail_recent_invocation_rows =
+        context.chat.tool_detail_recent_invocation_rows.clone();
+    let tool_detail_invocation_count = tool_detail_recent_invocation_rows.len().to_string();
+    let tool_detail_invocations_view = if tool_detail_recent_invocation_rows.is_empty() {
+        leptos::either::Either::Left(view! {
+            <tr id="tau-ops-tool-detail-invocation-empty-state" data-empty-state="true">
+                <td colspan="5">No recent invocations recorded.</td>
+            </tr>
+        })
+    } else {
+        leptos::either::Either::Right(
+            tool_detail_recent_invocation_rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| {
+                    let row_id = format!("tau-ops-tool-detail-invocation-row-{index}");
+                    let timestamp_unix_ms = row.timestamp_unix_ms.to_string();
+                    let duration_ms = row.duration_ms.to_string();
+                    let timestamp_unix_ms_attr = timestamp_unix_ms.clone();
+                    let duration_ms_attr = duration_ms.clone();
+                    view! {
+                        <tr
+                            id=row_id
+                            data-timestamp-unix-ms=timestamp_unix_ms_attr
+                            data-args-summary=row.args_summary.clone()
+                            data-result-summary=row.result_summary.clone()
+                            data-duration-ms=duration_ms_attr
+                            data-status=row.status.clone()
+                        >
+                            <td>{timestamp_unix_ms}</td>
+                            <td>{row.args_summary.clone()}</td>
+                            <td>{row.result_summary.clone()}</td>
+                            <td>{duration_ms}</td>
+                            <td>{row.status.clone()}</td>
                         </tr>
                     }
                 })
@@ -2679,6 +2814,54 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                     {tools_inventory_rows_view}
                                 </tbody>
                             </table>
+                            <section
+                                id="tau-ops-tool-detail-panel"
+                                data-selected-tool=tool_detail_selected_tool_name.clone()
+                                data-detail-visible=tool_detail_visible
+                            >
+                                <section
+                                    id="tau-ops-tool-detail-metadata"
+                                    data-tool-name=tool_detail_selected_tool_name.clone()
+                                    data-parameter-schema=tool_detail_parameter_schema.clone()
+                                >
+                                    <p id="tau-ops-tool-detail-description">
+                                        {tool_detail_description}
+                                    </p>
+                                </section>
+                                <section
+                                    id="tau-ops-tool-detail-policy"
+                                    data-timeout-ms=tool_detail_policy_timeout_ms
+                                    data-max-output-chars=tool_detail_policy_max_output_chars
+                                    data-sandbox-mode=tool_detail_policy_sandbox_mode
+                                >
+                                    <h3>Policy</h3>
+                                </section>
+                                <section
+                                    id="tau-ops-tool-detail-usage-histogram"
+                                    data-bucket-count=tool_detail_usage_bucket_count
+                                >
+                                    <h3>Usage (24h)</h3>
+                                    <ul>{tool_detail_usage_histogram_view}</ul>
+                                </section>
+                                <section
+                                    id="tau-ops-tool-detail-invocations"
+                                    data-row-count=tool_detail_invocation_count
+                                >
+                                    <h3>Recent Invocations</h3>
+                                    <table>
+                                        <thead>
+                                            <tr>
+                                                <th scope="col">Timestamp</th>
+                                                <th scope="col">Args</th>
+                                                <th scope="col">Result</th>
+                                                <th scope="col">Duration (ms)</th>
+                                                <th scope="col">Status</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>{tool_detail_invocations_view}</tbody>
+                                    </table>
+                                </section>
+                            </section>
                         </section>
                         <section
                             id="tau-ops-command-center"

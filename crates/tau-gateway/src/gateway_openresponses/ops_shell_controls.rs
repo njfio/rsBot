@@ -46,6 +46,8 @@ pub(super) struct OpsShellControlsQuery {
     graph_filter_memory_type: String,
     #[serde(default)]
     graph_filter_relation_type: String,
+    #[serde(default)]
+    tool: String,
 }
 
 impl OpsShellControlsQuery {
@@ -224,6 +226,15 @@ impl OpsShellControlsQuery {
         MemoryRelationType::parse(value)
             .map(|relation_type| relation_type.as_str().to_string())
             .unwrap_or_else(|| "all".to_string())
+    }
+
+    pub(super) fn requested_tool_name(&self) -> Option<String> {
+        let value = self.tool.trim();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        }
     }
 }
 
@@ -550,5 +561,17 @@ mod tests {
             ..OpsShellControlsQuery::default()
         };
         assert_eq!(invalid.requested_memory_graph_filter_relation_type(), "all");
+    }
+
+    #[test]
+    fn unit_requested_tool_name_returns_trimmed_name_or_none() {
+        let controls = OpsShellControlsQuery {
+            tool: " bash ".to_string(),
+            ..OpsShellControlsQuery::default()
+        };
+        assert_eq!(controls.requested_tool_name(), Some("bash".to_string()));
+
+        let empty = OpsShellControlsQuery::default();
+        assert_eq!(empty.requested_tool_name(), None);
     }
 }

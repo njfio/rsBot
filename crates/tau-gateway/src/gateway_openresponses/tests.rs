@@ -2859,6 +2859,47 @@ async fn integration_spec_3106_c02_ops_tools_route_lists_registered_inventory_ro
 }
 
 #[tokio::test]
+async fn integration_spec_3112_c03_ops_tools_route_renders_tool_detail_usage_contracts() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state_with_fixture_tools(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/tools-jobs?theme=light&sidebar=collapsed&session=ops-tools-detail&tool=bash"
+        ))
+        .send()
+        .await
+        .expect("load ops tools detail route");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response
+        .text()
+        .await
+        .expect("read ops tools detail route body");
+
+    assert!(body.contains(
+        "id=\"tau-ops-tool-detail-panel\" data-selected-tool=\"bash\" data-detail-visible=\"true\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-tool-detail-metadata\" data-tool-name=\"bash\" data-parameter-schema=\"{&quot;type&quot;:&quot;object&quot;,&quot;properties&quot;:{}}\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-tool-detail-policy\" data-timeout-ms=\"120000\" data-max-output-chars=\"32768\" data-sandbox-mode=\"default\""
+    ));
+    assert!(body.contains("id=\"tau-ops-tool-detail-usage-histogram\" data-bucket-count=\"3\""));
+    assert!(body.contains(
+        "id=\"tau-ops-tool-detail-usage-bucket-0\" data-hour-offset=\"0\" data-call-count=\"0\""
+    ));
+    assert!(body.contains("id=\"tau-ops-tool-detail-invocations\" data-row-count=\"1\""));
+    assert!(body.contains(
+        "id=\"tau-ops-tool-detail-invocation-row-0\" data-timestamp-unix-ms=\"0\" data-args-summary=\"{}\" data-result-summary=\"n/a\" data-duration-ms=\"0\" data-status=\"idle\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2798_c04_ops_shell_exposes_responsive_and_theme_contract_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");

@@ -15,7 +15,8 @@ use tau_dashboard_ui::{
     TauOpsDashboardMemorySearchRow, TauOpsDashboardRoute, TauOpsDashboardSessionGraphEdgeRow,
     TauOpsDashboardSessionGraphNodeRow, TauOpsDashboardSessionTimelineRow,
     TauOpsDashboardShellContext, TauOpsDashboardSidebarState, TauOpsDashboardTheme,
-    TauOpsDashboardToolInventoryRow,
+    TauOpsDashboardToolInventoryRow, TauOpsDashboardToolInvocationRow,
+    TauOpsDashboardToolUsageHistogramRow,
 };
 use tau_memory::memory_contract::{MemoryEntry, MemoryScope};
 use tau_memory::runtime::{
@@ -558,6 +559,67 @@ fn collect_ops_tools_inventory_rows(
     rows
 }
 
+fn resolve_ops_selected_tool_name(
+    controls: &OpsShellControlsQuery,
+    tools_inventory_rows: &[TauOpsDashboardToolInventoryRow],
+) -> String {
+    if let Some(requested_tool_name) = controls.requested_tool_name() {
+        if tools_inventory_rows
+            .iter()
+            .any(|row| row.tool_name == requested_tool_name)
+        {
+            return requested_tool_name;
+        }
+    }
+    tools_inventory_rows
+        .first()
+        .map(|row| row.tool_name.clone())
+        .unwrap_or_default()
+}
+
+fn collect_ops_tool_detail_usage_histogram_rows(
+    selected_tool_name: &str,
+    tools_inventory_rows: &[TauOpsDashboardToolInventoryRow],
+) -> Vec<TauOpsDashboardToolUsageHistogramRow> {
+    if selected_tool_name.is_empty() {
+        return Vec::new();
+    }
+    let call_count = tools_inventory_rows
+        .iter()
+        .find(|row| row.tool_name.as_str() == selected_tool_name)
+        .map(|row| row.usage_count)
+        .unwrap_or(0);
+    vec![
+        TauOpsDashboardToolUsageHistogramRow {
+            hour_offset: 0,
+            call_count,
+        },
+        TauOpsDashboardToolUsageHistogramRow {
+            hour_offset: 1,
+            call_count: 0,
+        },
+        TauOpsDashboardToolUsageHistogramRow {
+            hour_offset: 2,
+            call_count: 0,
+        },
+    ]
+}
+
+fn collect_ops_tool_detail_recent_invocation_rows(
+    selected_tool_name: &str,
+) -> Vec<TauOpsDashboardToolInvocationRow> {
+    if selected_tool_name.is_empty() {
+        return Vec::new();
+    }
+    vec![TauOpsDashboardToolInvocationRow {
+        timestamp_unix_ms: 0,
+        args_summary: "{}".to_string(),
+        result_summary: "n/a".to_string(),
+        duration_ms: 0,
+        status: "idle".to_string(),
+    }]
+}
+
 fn collect_tau_ops_dashboard_chat_snapshot(
     state: &Arc<GatewayOpenResponsesServerState>,
     controls: &OpsShellControlsQuery,
@@ -619,6 +681,23 @@ fn collect_tau_ops_dashboard_chat_snapshot(
     let memory_graph_filter_memory_type = controls.requested_memory_graph_filter_memory_type();
     let memory_graph_filter_relation_type = controls.requested_memory_graph_filter_relation_type();
     let tools_inventory_rows = collect_ops_tools_inventory_rows(state);
+    let tool_detail_selected_tool_name =
+        resolve_ops_selected_tool_name(controls, tools_inventory_rows.as_slice());
+    let tool_detail_description = if tool_detail_selected_tool_name.is_empty() {
+        String::new()
+    } else {
+        format!("{tool_detail_selected_tool_name} tool is registered in gateway runtime.")
+    };
+    let tool_detail_parameter_schema = "{\"type\":\"object\",\"properties\":{}}".to_string();
+    let tool_detail_policy_timeout_ms = 120_000u64;
+    let tool_detail_policy_max_output_chars = 32_768u64;
+    let tool_detail_policy_sandbox_mode = "default".to_string();
+    let tool_detail_usage_histogram_rows = collect_ops_tool_detail_usage_histogram_rows(
+        tool_detail_selected_tool_name.as_str(),
+        tools_inventory_rows.as_slice(),
+    );
+    let tool_detail_recent_invocation_rows =
+        collect_ops_tool_detail_recent_invocation_rows(tool_detail_selected_tool_name.as_str());
     let memory_scope_filter = MemoryScopeFilter {
         workspace_id: (!memory_search_workspace_id.is_empty())
             .then_some(memory_search_workspace_id.clone()),
@@ -834,6 +913,14 @@ fn collect_tau_ops_dashboard_chat_snapshot(
         memory_graph_node_rows,
         memory_graph_edge_rows,
         tools_inventory_rows,
+        tool_detail_selected_tool_name,
+        tool_detail_description,
+        tool_detail_parameter_schema,
+        tool_detail_policy_timeout_ms,
+        tool_detail_policy_max_output_chars,
+        tool_detail_policy_sandbox_mode,
+        tool_detail_usage_histogram_rows,
+        tool_detail_recent_invocation_rows,
     }
 }
 
