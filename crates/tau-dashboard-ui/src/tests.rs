@@ -4,7 +4,7 @@ use super::{
     render_tau_ops_dashboard_shell_for_route, render_tau_ops_dashboard_shell_with_context,
     TauOpsDashboardAlertFeedRow, TauOpsDashboardAuthMode, TauOpsDashboardChatMessageRow,
     TauOpsDashboardChatSessionOptionRow, TauOpsDashboardChatSnapshot,
-    TauOpsDashboardCommandCenterSnapshot, TauOpsDashboardConnectorHealthRow,
+    TauOpsDashboardCommandCenterSnapshot, TauOpsDashboardConnectorHealthRow, TauOpsDashboardJobRow,
     TauOpsDashboardMemoryGraphEdgeRow, TauOpsDashboardMemoryGraphNodeRow, TauOpsDashboardRoute,
     TauOpsDashboardSessionGraphEdgeRow, TauOpsDashboardSessionGraphNodeRow,
     TauOpsDashboardSessionTimelineRow, TauOpsDashboardShellContext, TauOpsDashboardSidebarState,
@@ -1811,6 +1811,79 @@ fn regression_spec_3112_c04_non_tools_routes_keep_hidden_tool_detail_markers() {
     ));
     assert!(html.contains("id=\"tau-ops-tool-detail-usage-histogram\" data-bucket-count=\"0\""));
     assert!(html.contains("id=\"tau-ops-tool-detail-invocations\" data-row-count=\"0\""));
+}
+
+#[test]
+fn functional_spec_3116_c01_c02_tools_route_renders_jobs_summary_and_rows() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::ToolsJobs,
+        theme: TauOpsDashboardTheme::Light,
+        sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot {
+            jobs_rows: vec![
+                TauOpsDashboardJobRow {
+                    job_id: "job-001".to_string(),
+                    job_name: "memory-index".to_string(),
+                    job_status: "running".to_string(),
+                    started_unix_ms: 1000,
+                    finished_unix_ms: 0,
+                },
+                TauOpsDashboardJobRow {
+                    job_id: "job-002".to_string(),
+                    job_name: "session-prune".to_string(),
+                    job_status: "completed".to_string(),
+                    started_unix_ms: 900,
+                    finished_unix_ms: 950,
+                },
+                TauOpsDashboardJobRow {
+                    job_id: "job-003".to_string(),
+                    job_name: "connector-retry".to_string(),
+                    job_status: "failed".to_string(),
+                    started_unix_ms: 800,
+                    finished_unix_ms: 820,
+                },
+            ],
+            ..TauOpsDashboardChatSnapshot::default()
+        },
+    });
+
+    assert!(html
+        .contains("id=\"tau-ops-jobs-panel\" data-panel-visible=\"true\" data-total-jobs=\"3\""));
+    assert!(html.contains(
+        "id=\"tau-ops-jobs-summary\" data-running-count=\"1\" data-completed-count=\"1\" data-failed-count=\"1\""
+    ));
+    assert!(html.contains("id=\"tau-ops-jobs-table\" data-row-count=\"3\""));
+    assert!(html.contains(
+        "id=\"tau-ops-jobs-row-0\" data-job-id=\"job-001\" data-job-name=\"memory-index\" data-job-status=\"running\" data-started-unix-ms=\"1000\" data-finished-unix-ms=\"0\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-jobs-row-1\" data-job-id=\"job-002\" data-job-name=\"session-prune\" data-job-status=\"completed\" data-started-unix-ms=\"900\" data-finished-unix-ms=\"950\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-jobs-row-2\" data-job-id=\"job-003\" data-job-name=\"connector-retry\" data-job-status=\"failed\" data-started-unix-ms=\"800\" data-finished-unix-ms=\"820\""
+    ));
+    assert!(!html.contains("id=\"tau-ops-jobs-empty-state\""));
+}
+
+#[test]
+fn regression_spec_3116_c04_non_tools_routes_keep_hidden_jobs_markers() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::Chat,
+        theme: TauOpsDashboardTheme::Dark,
+        sidebar_state: TauOpsDashboardSidebarState::Expanded,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot::default(),
+    });
+
+    assert!(html
+        .contains("id=\"tau-ops-jobs-panel\" data-panel-visible=\"false\" data-total-jobs=\"0\""));
+    assert!(html.contains(
+        "id=\"tau-ops-jobs-summary\" data-running-count=\"0\" data-completed-count=\"0\" data-failed-count=\"0\""
+    ));
+    assert!(html.contains("id=\"tau-ops-jobs-table\" data-row-count=\"0\""));
 }
 
 #[test]

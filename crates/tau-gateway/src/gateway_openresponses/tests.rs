@@ -2900,6 +2900,42 @@ async fn integration_spec_3112_c03_ops_tools_route_renders_tool_detail_usage_con
 }
 
 #[tokio::test]
+async fn integration_spec_3116_c03_ops_tools_route_renders_jobs_list_contracts() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state_with_fixture_tools(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/tools-jobs?theme=light&sidebar=collapsed&session=ops-jobs"
+        ))
+        .send()
+        .await
+        .expect("load ops jobs route");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops jobs route body");
+
+    assert!(body
+        .contains("id=\"tau-ops-jobs-panel\" data-panel-visible=\"true\" data-total-jobs=\"3\""));
+    assert!(body.contains(
+        "id=\"tau-ops-jobs-summary\" data-running-count=\"1\" data-completed-count=\"1\" data-failed-count=\"1\""
+    ));
+    assert!(body.contains("id=\"tau-ops-jobs-table\" data-row-count=\"3\""));
+    assert!(body.contains(
+        "id=\"tau-ops-jobs-row-0\" data-job-id=\"job-001\" data-job-name=\"memory-index\" data-job-status=\"running\" data-started-unix-ms=\"1000\" data-finished-unix-ms=\"0\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-jobs-row-1\" data-job-id=\"job-002\" data-job-name=\"session-prune\" data-job-status=\"completed\" data-started-unix-ms=\"900\" data-finished-unix-ms=\"950\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-jobs-row-2\" data-job-id=\"job-003\" data-job-name=\"connector-retry\" data-job-status=\"failed\" data-started-unix-ms=\"800\" data-finished-unix-ms=\"820\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2798_c04_ops_shell_exposes_responsive_and_theme_contract_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");
