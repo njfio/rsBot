@@ -15,6 +15,7 @@ This report tracks **remaining** gaps only and explicitly records what is alread
 | Provider routing | OpenRouter is a first-class provider | `crates/tau-ai/src/provider.rs`, `crates/tau-ai/tests/provider_http_integration.rs` |
 | Session backend | PostgreSQL session backend is implemented | `crates/tau-session/src/session_storage.rs`, `crates/tau-session/Cargo.toml` |
 | Onboarding | Guided onboarding crate and command flow are implemented | `crates/tau-onboarding/src/onboarding_command.rs`, `crates/tau-onboarding/src/onboarding_wizard.rs` |
+| RL optimizer wiring | PPO/GAE runtime optimization is implemented in training and live RL paths | `crates/tau-coding-agent/src/training_runtime.rs`, `crates/tau-coding-agent/src/live_rl_runtime.rs` |
 | Distribution | Dockerfile + release workflow assets are present | `Dockerfile`, `.github/workflows/release.yml`, `scripts/release/render-homebrew-formula.sh`, `scripts/release/generate-shell-completions.sh` |
 | Fuzzing | Fuzz harnesses and deterministic fuzz-conformance tests are present | `fuzz/fuzz_targets/`, `scripts/qa/test-fuzz-contract.sh` |
 | Log lifecycle | Core log rotation primitives and integration tests are implemented | `crates/tau-core/src/log_rotation.rs`, `crates/tau-runtime/src/observability_loggers_runtime.rs:854`, `crates/tau-gateway/src/gateway_runtime.rs:1098` |
@@ -22,16 +23,7 @@ This report tracks **remaining** gaps only and explicitly records what is alread
 
 ## Remaining High-Impact Gaps
 
-### 1) PPO runtime integration remains incomplete
-
-PPO/GAE math exists in `tau-algorithm`, but there is still no production runtime/trainer wiring that executes PPO updates as a selectable training algorithm in the live training loop.
-
-- `compute_ppo_loss` and `compute_ppo_update` are currently confined to `crates/tau-algorithm/src/ppo.rs`
-- No runtime wiring equivalent to a `--training-algorithm ppo` flow is exposed in current execution paths
-
-PPO/GAE math is implemented but still not wired into the runtime training loop.
-
-### 2) Legacy dashboard crate consolidation is incomplete
+### 1) Legacy dashboard crate consolidation is incomplete
 
 `crates/tau-dashboard` remains contract/runtime-fixture oriented while operational dashboard surfaces are served from gateway and UI crates.
 

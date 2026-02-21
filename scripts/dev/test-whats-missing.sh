@@ -35,7 +35,7 @@ assert_contains "OpenRouter is a first-class provider" "openrouter resolution ma
 assert_contains "PostgreSQL session backend is implemented" "postgres resolution marker"
 assert_contains "Dockerfile + release workflow assets are present" "distribution resolution marker"
 assert_contains "Fuzz harnesses and deterministic fuzz-conformance tests are present" "fuzz resolution marker"
-assert_contains "PPO/GAE math is implemented but still not wired into the runtime training loop" "ppo unresolved marker"
+assert_contains "PPO/GAE runtime optimization is implemented in training and live RL paths" "ppo implementation marker"
 
 # Stale markers that must never reappear.
 assert_not_contains "No Per-Session Cost Tracking" "old critical gap"
@@ -48,5 +48,6 @@ assert_not_contains "No Homebrew Formula" "old distribution gap"
 assert_not_contains "No Shell Completions" "old distribution gap"
 assert_not_contains "No Fuzz Testing" "old testing gap"
 assert_not_contains "No Log Rotation" "old testing gap"
+assert_not_contains "PPO/GAE math is implemented but still not wired into the runtime training loop" "stale ppo claim"
 
 echo "whats-missing conformance passed"
