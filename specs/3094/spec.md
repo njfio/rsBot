@@ -1,6 +1,6 @@
 # Spec: Issue #3094 - ops memory-graph zoom in/out contracts
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 `/ops/memory-graph` currently exposes deterministic graph structure and focus/highlight
