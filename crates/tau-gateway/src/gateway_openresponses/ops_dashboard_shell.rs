@@ -9,10 +9,11 @@ use tau_ai::{Message, MessageRole};
 use tau_dashboard_ui::{
     render_tau_ops_dashboard_shell_with_context, TauOpsDashboardAuthMode,
     TauOpsDashboardChatMessageRow, TauOpsDashboardChatSessionOptionRow,
-    TauOpsDashboardChatSnapshot, TauOpsDashboardMemoryRelationRow, TauOpsDashboardMemorySearchRow,
-    TauOpsDashboardRoute, TauOpsDashboardSessionGraphEdgeRow, TauOpsDashboardSessionGraphNodeRow,
-    TauOpsDashboardSessionTimelineRow, TauOpsDashboardShellContext, TauOpsDashboardSidebarState,
-    TauOpsDashboardTheme,
+    TauOpsDashboardChatSnapshot, TauOpsDashboardMemoryGraphEdgeRow,
+    TauOpsDashboardMemoryGraphNodeRow, TauOpsDashboardMemoryRelationRow,
+    TauOpsDashboardMemorySearchRow, TauOpsDashboardRoute, TauOpsDashboardSessionGraphEdgeRow,
+    TauOpsDashboardSessionGraphNodeRow, TauOpsDashboardSessionTimelineRow,
+    TauOpsDashboardShellContext, TauOpsDashboardSidebarState, TauOpsDashboardTheme,
 };
 use tau_memory::memory_contract::{MemoryEntry, MemoryScope};
 use tau_memory::runtime::{
@@ -564,19 +565,21 @@ fn collect_tau_ops_dashboard_chat_snapshot(
     let mut memory_detail_embedding_reason_code = String::new();
     let mut memory_detail_embedding_dimensions = 0usize;
     let mut memory_detail_relation_rows = Vec::new();
+    let mut memory_graph_node_rows = Vec::new();
+    let mut memory_graph_edge_rows = Vec::new();
+    let memory_scope_filter = MemoryScopeFilter {
+        workspace_id: (!memory_search_workspace_id.is_empty())
+            .then_some(memory_search_workspace_id.clone()),
+        channel_id: (!memory_search_channel_id.is_empty())
+            .then_some(memory_search_channel_id.clone()),
+        actor_id: (!memory_search_actor_id.is_empty()).then_some(memory_search_actor_id.clone()),
+    };
     let store = gateway_memory_store(&state.config.state_dir, active_session_key.as_str());
 
     if !memory_search_query.trim().is_empty() {
         let search_options = MemorySearchOptions {
             limit: controls.requested_memory_limit(),
-            scope: MemoryScopeFilter {
-                workspace_id: (!memory_search_workspace_id.is_empty())
-                    .then_some(memory_search_workspace_id.clone()),
-                channel_id: (!memory_search_channel_id.is_empty())
-                    .then_some(memory_search_channel_id.clone()),
-                actor_id: (!memory_search_actor_id.is_empty())
-                    .then_some(memory_search_actor_id.clone()),
-            },
+            scope: memory_scope_filter.clone(),
             ..MemorySearchOptions::default()
         };
         if let Ok(search_result) = store.search(memory_search_query.as_str(), &search_options) {
@@ -622,6 +625,50 @@ fn collect_tau_ops_dashboard_chat_snapshot(
                 memory_detail_selected_entry_id.clear();
             }
         }
+    }
+
+    if let Ok(mut records) = store.list_latest_records(
+        Some(&memory_scope_filter),
+        controls.requested_memory_limit(),
+    ) {
+        records.sort_by(|left, right| left.entry.memory_id.cmp(&right.entry.memory_id));
+        if !memory_search_memory_type.is_empty() {
+            records
+                .retain(|record| record.memory_type.as_str() == memory_search_memory_type.as_str());
+        }
+
+        let memory_ids = records
+            .iter()
+            .map(|record| record.entry.memory_id.clone())
+            .collect::<BTreeSet<_>>();
+
+        memory_graph_node_rows = records
+            .iter()
+            .map(|record| TauOpsDashboardMemoryGraphNodeRow {
+                memory_id: record.entry.memory_id.clone(),
+                memory_type: record.memory_type.as_str().to_string(),
+                importance: format!("{:.4}", record.importance),
+            })
+            .collect();
+
+        for record in &records {
+            for relation in &record.relations {
+                if memory_ids.contains(&relation.target_id) {
+                    memory_graph_edge_rows.push(TauOpsDashboardMemoryGraphEdgeRow {
+                        source_memory_id: record.entry.memory_id.clone(),
+                        target_memory_id: relation.target_id.clone(),
+                        relation_type: relation.relation_type.as_str().to_string(),
+                        effective_weight: format!("{:.4}", relation.effective_weight),
+                    });
+                }
+            }
+        }
+        memory_graph_edge_rows.sort_by(|left, right| {
+            left.source_memory_id
+                .cmp(&right.source_memory_id)
+                .then(left.target_memory_id.cmp(&right.target_memory_id))
+                .then(left.relation_type.cmp(&right.relation_type))
+        });
     }
 
     if let Ok(store) = SessionStore::load(&session_path) {
@@ -727,6 +774,8 @@ fn collect_tau_ops_dashboard_chat_snapshot(
         memory_detail_embedding_reason_code,
         memory_detail_embedding_dimensions,
         memory_detail_relation_rows,
+        memory_graph_node_rows,
+        memory_graph_edge_rows,
     }
 }
 

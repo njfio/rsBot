@@ -2190,6 +2190,110 @@ async fn regression_spec_3064_ops_memory_detail_panel_hides_when_selected_entry_
 }
 
 #[tokio::test]
+async fn integration_spec_3068_c02_ops_memory_graph_route_renders_node_and_edge_markers() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let session_key = "ops-memory-graph";
+    let target_endpoint = expand_memory_entry_template(
+        GATEWAY_MEMORY_ENTRY_ENDPOINT,
+        session_key,
+        "mem-graph-target",
+    );
+    let target_create = client
+        .put(format!("http://{addr}{target_endpoint}"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "summary": "Graph target",
+            "workspace_id": "workspace-graph",
+            "channel_id": "channel-graph",
+            "actor_id": "operator",
+            "memory_type": "fact",
+            "policy_gate": MEMORY_WRITE_POLICY_GATE
+        }))
+        .send()
+        .await
+        .expect("create memory graph target entry");
+    assert_eq!(target_create.status(), StatusCode::CREATED);
+
+    let source_create = client
+        .post(format!("http://{addr}/ops/memory"))
+        .form(&[
+            ("theme", "light"),
+            ("sidebar", "collapsed"),
+            ("session", session_key),
+            ("operation", "create"),
+            ("entry_id", "mem-graph-source"),
+            ("summary", "Graph source"),
+            ("workspace_id", "workspace-graph"),
+            ("channel_id", "channel-graph"),
+            ("actor_id", "operator"),
+            ("memory_type", "goal"),
+            ("relation_target_id", "mem-graph-target"),
+            ("relation_type", "supports"),
+            ("relation_weight", "0.42"),
+        ])
+        .send()
+        .await
+        .expect("create memory graph source entry");
+    assert_eq!(source_create.status(), StatusCode::OK);
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/memory-graph?theme=light&sidebar=collapsed&session={session_key}&workspace_id=workspace-graph&channel_id=channel-graph&actor_id=operator"
+        ))
+        .send()
+        .await
+        .expect("load ops memory graph route");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops memory graph body");
+
+    assert!(body.contains(
+        "id=\"tau-ops-memory-graph-panel\" data-route=\"/ops/memory-graph\" aria-hidden=\"false\" data-panel-visible=\"true\""
+    ));
+    assert!(body.contains("id=\"tau-ops-memory-graph-nodes\" data-node-count=\"2\""));
+    assert!(body.contains("id=\"tau-ops-memory-graph-edges\" data-edge-count=\"1\""));
+    assert!(body.contains("data-memory-id=\"mem-graph-source\""));
+    assert!(body.contains("data-memory-id=\"mem-graph-target\""));
+    assert!(body.contains(
+        "id=\"tau-ops-memory-graph-edge-0\" data-source-memory-id=\"mem-graph-source\" data-target-memory-id=\"mem-graph-target\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_3068_c03_non_memory_graph_routes_keep_hidden_graph_markers() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/chat?theme=light&sidebar=collapsed"
+        ))
+        .send()
+        .await
+        .expect("load non-memory-graph route");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response
+        .text()
+        .await
+        .expect("read non-memory-graph route body");
+
+    assert!(body.contains(
+        "id=\"tau-ops-memory-graph-panel\" data-route=\"/ops/memory-graph\" aria-hidden=\"true\" data-panel-visible=\"false\""
+    ));
+    assert!(body.contains("id=\"tau-ops-memory-graph-nodes\" data-node-count=\"0\""));
+    assert!(body.contains("id=\"tau-ops-memory-graph-edges\" data-edge-count=\"0\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2798_c04_ops_shell_exposes_responsive_and_theme_contract_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");

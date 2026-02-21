@@ -1225,6 +1225,43 @@ fn regression_spec_3064_c04_non_memory_routes_keep_hidden_detail_panel_markers()
 }
 
 #[test]
+fn functional_spec_3068_c01_memory_graph_route_renders_graph_panel_default_markers() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::MemoryGraph,
+        theme: TauOpsDashboardTheme::Light,
+        sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot::default(),
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-memory-graph-panel\" data-route=\"/ops/memory-graph\" aria-hidden=\"false\" data-panel-visible=\"true\" data-node-count=\"0\" data-edge-count=\"0\""
+    ));
+    assert!(html.contains("id=\"tau-ops-memory-graph-nodes\" data-node-count=\"0\""));
+    assert!(html.contains("id=\"tau-ops-memory-graph-edges\" data-edge-count=\"0\""));
+    assert!(html.contains("id=\"tau-ops-memory-graph-empty-state\" data-empty-state=\"true\""));
+}
+
+#[test]
+fn regression_spec_3068_c03_non_memory_graph_routes_keep_hidden_graph_markers() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::Chat,
+        theme: TauOpsDashboardTheme::Light,
+        sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot::default(),
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-memory-graph-panel\" data-route=\"/ops/memory-graph\" aria-hidden=\"true\" data-panel-visible=\"false\""
+    ));
+    assert!(html.contains("id=\"tau-ops-memory-graph-nodes\" data-node-count=\"0\""));
+    assert!(html.contains("id=\"tau-ops-memory-graph-edges\" data-edge-count=\"0\""));
+}
+
+#[test]
 fn functional_spec_2838_c01_c02_c03_sessions_route_renders_sessions_panel_list_rows_and_links() {
     let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
         auth_mode: TauOpsDashboardAuthMode::Token,

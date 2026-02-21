@@ -257,6 +257,23 @@ pub struct TauOpsDashboardMemoryRelationRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TauOpsDashboardMemoryGraphNodeRow` in `tau-dashboard-ui`.
+pub struct TauOpsDashboardMemoryGraphNodeRow {
+    pub memory_id: String,
+    pub memory_type: String,
+    pub importance: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TauOpsDashboardMemoryGraphEdgeRow` in `tau-dashboard-ui`.
+pub struct TauOpsDashboardMemoryGraphEdgeRow {
+    pub source_memory_id: String,
+    pub target_memory_id: String,
+    pub relation_type: String,
+    pub effective_weight: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Public struct `TauOpsDashboardChatSessionOptionRow` in `tau-dashboard-ui`.
 pub struct TauOpsDashboardChatSessionOptionRow {
     pub session_key: String,
@@ -349,6 +366,8 @@ pub struct TauOpsDashboardChatSnapshot {
     pub memory_detail_embedding_reason_code: String,
     pub memory_detail_embedding_dimensions: usize,
     pub memory_detail_relation_rows: Vec<TauOpsDashboardMemoryRelationRow>,
+    pub memory_graph_node_rows: Vec<TauOpsDashboardMemoryGraphNodeRow>,
+    pub memory_graph_edge_rows: Vec<TauOpsDashboardMemoryGraphEdgeRow>,
 }
 
 impl Default for TauOpsDashboardChatSnapshot {
@@ -418,6 +437,8 @@ impl Default for TauOpsDashboardChatSnapshot {
             memory_detail_embedding_reason_code: String::new(),
             memory_detail_embedding_dimensions: 0,
             memory_detail_relation_rows: vec![],
+            memory_graph_node_rows: vec![],
+            memory_graph_edge_rows: vec![],
         }
     }
 }
@@ -641,6 +662,18 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     } else {
         "false"
     };
+    let memory_graph_panel_hidden =
+        if matches!(context.active_route, TauOpsDashboardRoute::MemoryGraph) {
+            "false"
+        } else {
+            "true"
+        };
+    let memory_graph_panel_visible =
+        if matches!(context.active_route, TauOpsDashboardRoute::MemoryGraph) {
+            "true"
+        } else {
+            "false"
+        };
     let command_center_panel_hidden = if matches!(context.active_route, TauOpsDashboardRoute::Ops) {
         "false"
     } else {
@@ -901,6 +934,53 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                 .collect_view(),
         )
     };
+    let memory_graph_node_rows = context.chat.memory_graph_node_rows.clone();
+    let memory_graph_edge_rows = context.chat.memory_graph_edge_rows.clone();
+    let memory_graph_node_count = memory_graph_node_rows.len().to_string();
+    let memory_graph_edge_count = memory_graph_edge_rows.len().to_string();
+    let memory_graph_node_count_panel_attr = memory_graph_node_count.clone();
+    let memory_graph_edge_count_panel_attr = memory_graph_edge_count.clone();
+    let memory_graph_nodes_view = if memory_graph_node_rows.is_empty() {
+        leptos::either::Either::Left(view! {
+            <li id="tau-ops-memory-graph-empty-state" data-empty-state="true">
+                No memory graph nodes available.
+            </li>
+        })
+    } else {
+        leptos::either::Either::Right(
+            memory_graph_node_rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| {
+                    let row_id = format!("tau-ops-memory-graph-node-{index}");
+                    view! {
+                        <li
+                            id=row_id
+                            data-memory-id=row.memory_id.clone()
+                            data-memory-type=row.memory_type.clone()
+                            data-importance=row.importance.clone()
+                        ></li>
+                    }
+                })
+                .collect_view(),
+        )
+    };
+    let memory_graph_edges_view = memory_graph_edge_rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let row_id = format!("tau-ops-memory-graph-edge-{index}");
+            view! {
+                <li
+                    id=row_id
+                    data-source-memory-id=row.source_memory_id.clone()
+                    data-target-memory-id=row.target_memory_id.clone()
+                    data-relation-type=row.relation_type.clone()
+                    data-relation-weight=row.effective_weight.clone()
+                ></li>
+            }
+        })
+        .collect_view();
     let session_detail_panel_hidden =
         if matches!(context.active_route, TauOpsDashboardRoute::Sessions)
             && context.chat.session_detail_visible
@@ -2104,6 +2184,22 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                             </section>
                             <ul id="tau-ops-memory-results" data-result-count=memory_result_count_list_attr>
                                 {memory_results_view}
+                            </ul>
+                        </section>
+                        <section
+                            id="tau-ops-memory-graph-panel"
+                            data-route="/ops/memory-graph"
+                            aria-hidden=memory_graph_panel_hidden
+                            data-panel-visible=memory_graph_panel_visible
+                            data-node-count=memory_graph_node_count_panel_attr
+                            data-edge-count=memory_graph_edge_count_panel_attr
+                        >
+                            <h2>Memory Graph</h2>
+                            <ul id="tau-ops-memory-graph-nodes" data-node-count=memory_graph_node_count>
+                                {memory_graph_nodes_view}
+                            </ul>
+                            <ul id="tau-ops-memory-graph-edges" data-edge-count=memory_graph_edge_count>
+                                {memory_graph_edges_view}
                             </ul>
                         </section>
                         <section
