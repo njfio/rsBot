@@ -1,6 +1,6 @@
 # Spec: Issue #3264 - move stream_openresponses handler to dedicated module
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 `gateway_openresponses.rs` still includes `stream_openresponses`, which can be isolated into a dedicated module without changing endpoint behavior. Keeping stream orchestration in root increases module density and weakens ownership boundaries.
