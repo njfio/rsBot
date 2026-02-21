@@ -2365,6 +2365,77 @@ async fn integration_spec_3070_c02_ops_memory_graph_node_size_markers_follow_imp
 }
 
 #[tokio::test]
+async fn integration_spec_3078_c02_ops_memory_graph_node_color_markers_follow_memory_type() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let session_key = "ops-memory-graph-color";
+    let fact_create = client
+        .post(format!("http://{addr}/ops/memory"))
+        .form(&[
+            ("theme", "light"),
+            ("sidebar", "collapsed"),
+            ("session", session_key),
+            ("operation", "create"),
+            ("entry_id", "mem-color-fact"),
+            ("summary", "Fact color"),
+            ("workspace_id", "workspace-color"),
+            ("channel_id", "channel-color"),
+            ("actor_id", "operator"),
+            ("memory_type", "fact"),
+            ("importance", "0.50"),
+        ])
+        .send()
+        .await
+        .expect("create fact memory entry");
+    assert_eq!(fact_create.status(), StatusCode::OK);
+
+    let event_create = client
+        .post(format!("http://{addr}/ops/memory"))
+        .form(&[
+            ("theme", "light"),
+            ("sidebar", "collapsed"),
+            ("session", session_key),
+            ("operation", "create"),
+            ("entry_id", "mem-color-event"),
+            ("summary", "Event color"),
+            ("workspace_id", "workspace-color"),
+            ("channel_id", "channel-color"),
+            ("actor_id", "operator"),
+            ("memory_type", "event"),
+            ("importance", "0.50"),
+        ])
+        .send()
+        .await
+        .expect("create event memory entry");
+    assert_eq!(event_create.status(), StatusCode::OK);
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/memory-graph?theme=light&sidebar=collapsed&session={session_key}&workspace_id=workspace-color&channel_id=channel-color&actor_id=operator"
+        ))
+        .send()
+        .await
+        .expect("load ops memory graph color route");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response
+        .text()
+        .await
+        .expect("read ops memory graph color body");
+
+    assert!(body.contains(
+        "data-memory-id=\"mem-color-fact\" data-memory-type=\"fact\" data-importance=\"0.5000\" data-node-size-bucket=\"medium\" data-node-size-px=\"20.00\" data-node-color-token=\"fact\" data-node-color-hex=\"#2563eb\""
+    ));
+    assert!(body.contains(
+        "data-memory-id=\"mem-color-event\" data-memory-type=\"event\" data-importance=\"0.5000\" data-node-size-bucket=\"medium\" data-node-size-px=\"20.00\" data-node-color-token=\"event\" data-node-color-hex=\"#7c3aed\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2798_c04_ops_shell_exposes_responsive_and_theme_contract_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");

@@ -1295,6 +1295,39 @@ fn functional_spec_3070_c01_c02_memory_graph_route_renders_node_size_markers_fro
 }
 
 #[test]
+fn functional_spec_3078_c02_memory_graph_route_renders_node_color_markers_from_memory_type() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::MemoryGraph,
+        theme: TauOpsDashboardTheme::Light,
+        sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot {
+            memory_graph_node_rows: vec![
+                TauOpsDashboardMemoryGraphNodeRow {
+                    memory_id: "mem-color-fact".to_string(),
+                    memory_type: "fact".to_string(),
+                    importance: "0.5000".to_string(),
+                },
+                TauOpsDashboardMemoryGraphNodeRow {
+                    memory_id: "mem-color-event".to_string(),
+                    memory_type: "event".to_string(),
+                    importance: "0.5000".to_string(),
+                },
+            ],
+            ..TauOpsDashboardChatSnapshot::default()
+        },
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-memory-graph-node-0\" data-memory-id=\"mem-color-fact\" data-memory-type=\"fact\" data-importance=\"0.5000\" data-node-size-bucket=\"medium\" data-node-size-px=\"20.00\" data-node-color-token=\"fact\" data-node-color-hex=\"#2563eb\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-memory-graph-node-1\" data-memory-id=\"mem-color-event\" data-memory-type=\"event\" data-importance=\"0.5000\" data-node-size-bucket=\"medium\" data-node-size-px=\"20.00\" data-node-color-token=\"event\" data-node-color-hex=\"#7c3aed\""
+    ));
+}
+
+#[test]
 fn functional_spec_2838_c01_c02_c03_sessions_route_renders_sessions_panel_list_rows_and_links() {
     let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
         auth_mode: TauOpsDashboardAuthMode::Token,
