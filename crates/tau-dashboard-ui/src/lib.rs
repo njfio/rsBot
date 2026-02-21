@@ -249,6 +249,14 @@ pub struct TauOpsDashboardMemorySearchRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TauOpsDashboardMemoryRelationRow` in `tau-dashboard-ui`.
+pub struct TauOpsDashboardMemoryRelationRow {
+    pub target_id: String,
+    pub relation_type: String,
+    pub effective_weight: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Public struct `TauOpsDashboardChatSessionOptionRow` in `tau-dashboard-ui`.
 pub struct TauOpsDashboardChatSessionOptionRow {
     pub session_key: String,
@@ -332,6 +340,15 @@ pub struct TauOpsDashboardChatSnapshot {
     pub memory_create_relation_weight: String,
     pub memory_delete_status: String,
     pub memory_delete_deleted_entry_id: String,
+    pub memory_detail_visible: bool,
+    pub memory_detail_selected_entry_id: String,
+    pub memory_detail_summary: String,
+    pub memory_detail_memory_type: String,
+    pub memory_detail_embedding_source: String,
+    pub memory_detail_embedding_model: String,
+    pub memory_detail_embedding_reason_code: String,
+    pub memory_detail_embedding_dimensions: usize,
+    pub memory_detail_relation_rows: Vec<TauOpsDashboardMemoryRelationRow>,
 }
 
 impl Default for TauOpsDashboardChatSnapshot {
@@ -392,6 +409,15 @@ impl Default for TauOpsDashboardChatSnapshot {
             memory_create_relation_weight: String::new(),
             memory_delete_status: "idle".to_string(),
             memory_delete_deleted_entry_id: String::new(),
+            memory_detail_visible: false,
+            memory_detail_selected_entry_id: String::new(),
+            memory_detail_summary: String::new(),
+            memory_detail_memory_type: String::new(),
+            memory_detail_embedding_source: String::new(),
+            memory_detail_embedding_model: String::new(),
+            memory_detail_embedding_reason_code: String::new(),
+            memory_detail_embedding_dimensions: 0,
+            memory_detail_relation_rows: vec![],
         }
     }
 }
@@ -794,6 +820,59 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
         "deleted" => "Memory entry deleted.".to_string(),
         _ => "Delete a memory entry.".to_string(),
     };
+    let memory_detail_visible = if context.chat.memory_detail_visible {
+        "true"
+    } else {
+        "false"
+    };
+    let memory_detail_selected_entry_id = context.chat.memory_detail_selected_entry_id.clone();
+    let memory_detail_memory_type = context.chat.memory_detail_memory_type.clone();
+    let memory_detail_embedding_source = context.chat.memory_detail_embedding_source.clone();
+    let memory_detail_embedding_model = context.chat.memory_detail_embedding_model.clone();
+    let memory_detail_embedding_reason_code =
+        context.chat.memory_detail_embedding_reason_code.clone();
+    let memory_detail_embedding_dimensions =
+        context.chat.memory_detail_embedding_dimensions.to_string();
+    let memory_detail_relation_rows = context.chat.memory_detail_relation_rows.clone();
+    let memory_detail_relation_count = memory_detail_relation_rows.len().to_string();
+    let memory_detail_embedding_source_panel_attr = memory_detail_embedding_source.clone();
+    let memory_detail_embedding_model_panel_attr = memory_detail_embedding_model.clone();
+    let memory_detail_embedding_reason_code_panel_attr =
+        memory_detail_embedding_reason_code.clone();
+    let memory_detail_embedding_dimensions_panel_attr = memory_detail_embedding_dimensions.clone();
+    let memory_detail_relation_count_panel_attr = memory_detail_relation_count.clone();
+    let memory_detail_summary = if context.chat.memory_detail_summary.is_empty() {
+        "No selected memory detail.".to_string()
+    } else {
+        context.chat.memory_detail_summary.clone()
+    };
+    let memory_detail_relations_view = if memory_detail_relation_rows.is_empty() {
+        leptos::either::Either::Left(view! {
+            <li id="tau-ops-memory-relations-empty-state" data-empty-state="true">
+                No connected entries.
+            </li>
+        })
+    } else {
+        leptos::either::Either::Right(
+            memory_detail_relation_rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| {
+                    let row_id = format!("tau-ops-memory-relation-row-{index}");
+                    view! {
+                        <li
+                            id=row_id
+                            data-target-id=row.target_id.clone()
+                            data-relation-type=row.relation_type.clone()
+                            data-relation-weight=row.effective_weight.clone()
+                        >
+                            {row.target_id.clone()}
+                        </li>
+                    }
+                })
+                .collect_view(),
+        )
+    };
     let memory_results_view = if memory_search_rows.is_empty() {
         leptos::either::Either::Left(view! {
             <li id="tau-ops-memory-empty-state" data-empty-state="true">
@@ -813,6 +892,7 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                             data-memory-id=row.memory_id.clone()
                             data-memory-type=row.memory_type.clone()
                             data-score=row.score.clone()
+                            data-detail-memory-id=row.memory_id.clone()
                         >
                             {row.summary.clone()}
                         </li>
@@ -1998,6 +2078,30 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                     Delete Entry
                                 </button>
                             </form>
+                            <section
+                                id="tau-ops-memory-detail-panel"
+                                data-detail-visible=memory_detail_visible
+                                data-memory-id=memory_detail_selected_entry_id
+                                data-memory-type=memory_detail_memory_type
+                                data-embedding-source=memory_detail_embedding_source_panel_attr
+                                data-embedding-model=memory_detail_embedding_model_panel_attr
+                                data-embedding-reason-code=memory_detail_embedding_reason_code_panel_attr
+                                data-embedding-dimensions=memory_detail_embedding_dimensions_panel_attr
+                                data-relation-count=memory_detail_relation_count_panel_attr
+                            >
+                                <p
+                                    id="tau-ops-memory-detail-embedding"
+                                    data-embedding-source=memory_detail_embedding_source
+                                    data-embedding-model=memory_detail_embedding_model
+                                    data-embedding-reason-code=memory_detail_embedding_reason_code
+                                    data-embedding-dimensions=memory_detail_embedding_dimensions
+                                >
+                                    {memory_detail_summary}
+                                </p>
+                                <ul id="tau-ops-memory-relations" data-relation-count=memory_detail_relation_count>
+                                    {memory_detail_relations_view}
+                                </ul>
+                            </section>
                             <ul id="tau-ops-memory-results" data-result-count=memory_result_count_list_attr>
                                 {memory_results_view}
                             </ul>

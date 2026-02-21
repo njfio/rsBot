@@ -1,6 +1,6 @@
 # Spec: Issue #3064 - ops memory detail embedding and relations contracts
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Tau Ops `/ops/memory` currently renders search/create/edit/delete contracts, but
