@@ -1,6 +1,102 @@
 //! Multi-channel status projection helpers for gateway status surfaces.
 use super::*;
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(super) struct GatewayMultiChannelStatusReport {
+    pub(super) state_present: bool,
+    pub(super) health_state: String,
+    pub(super) health_reason: String,
+    pub(super) rollout_gate: String,
+    pub(super) processed_event_count: usize,
+    pub(super) transport_counts: BTreeMap<String, usize>,
+    pub(super) queue_depth: usize,
+    pub(super) failure_streak: usize,
+    pub(super) last_cycle_failed: usize,
+    pub(super) last_cycle_completed: usize,
+    pub(super) cycle_reports: usize,
+    pub(super) invalid_cycle_reports: usize,
+    pub(super) last_reason_codes: Vec<String>,
+    pub(super) reason_code_counts: BTreeMap<String, usize>,
+    pub(super) connectors: GatewayMultiChannelConnectorsStatusReport,
+    pub(super) diagnostics: Vec<String>,
+}
+
+impl Default for GatewayMultiChannelStatusReport {
+    fn default() -> Self {
+        Self {
+            state_present: false,
+            health_state: "unknown".to_string(),
+            health_reason: "multi-channel runtime state is unavailable".to_string(),
+            rollout_gate: "hold".to_string(),
+            processed_event_count: 0,
+            transport_counts: BTreeMap::new(),
+            queue_depth: 0,
+            failure_streak: 0,
+            last_cycle_failed: 0,
+            last_cycle_completed: 0,
+            cycle_reports: 0,
+            invalid_cycle_reports: 0,
+            last_reason_codes: Vec::new(),
+            reason_code_counts: BTreeMap::new(),
+            connectors: GatewayMultiChannelConnectorsStatusReport::default(),
+            diagnostics: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
+pub(super) struct GatewayMultiChannelConnectorsStatusReport {
+    pub(super) state_present: bool,
+    pub(super) processed_event_count: usize,
+    pub(super) channels: BTreeMap<String, GatewayMultiChannelConnectorChannelSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq, Default)]
+pub(super) struct GatewayMultiChannelConnectorChannelSummary {
+    pub(super) mode: String,
+    pub(super) liveness: String,
+    pub(super) breaker_state: String,
+    pub(super) events_ingested: u64,
+    pub(super) duplicates_skipped: u64,
+    pub(super) retry_attempts: u64,
+    pub(super) auth_failures: u64,
+    pub(super) parse_failures: u64,
+    pub(super) provider_failures: u64,
+    pub(super) consecutive_failures: u64,
+    pub(super) retry_budget_remaining: u64,
+    pub(super) breaker_open_until_unix_ms: u64,
+    pub(super) breaker_last_open_reason: String,
+    pub(super) breaker_open_count: u64,
+    pub(super) last_error_code: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct GatewayMultiChannelRuntimeStateFile {
+    #[serde(default)]
+    processed_event_keys: Vec<String>,
+    #[serde(default)]
+    health: TransportHealthSnapshot,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct GatewayMultiChannelCycleReportLine {
+    #[serde(default)]
+    reason_codes: Vec<String>,
+    #[serde(default)]
+    health_reason: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+struct GatewayMultiChannelConnectorsStateFile {
+    #[serde(default)]
+    processed_event_keys: Vec<String>,
+    #[serde(default)]
+    channels: BTreeMap<
+        String,
+        tau_multi_channel::multi_channel_live_connectors::MultiChannelLiveConnectorChannelState,
+    >,
+}
+
 pub(super) fn collect_gateway_multi_channel_status_report(
     gateway_state_dir: &Path,
 ) -> GatewayMultiChannelStatusReport {
