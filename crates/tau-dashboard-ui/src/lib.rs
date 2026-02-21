@@ -608,6 +608,16 @@ fn derive_memory_graph_node_color_contracts(memory_type: &str) -> (&'static str,
     }
 }
 
+fn derive_memory_graph_edge_style_contracts(relation_type: &str) -> (&'static str, &'static str) {
+    let normalized = relation_type.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "related_to" | "relates_to" | "supports" | "references" | "part_of" => ("solid", "none"),
+        "updates" | "caused_by" | "depends_on" | "result_of" => ("dashed", "6 4"),
+        "contradicts" | "blocks" => ("dotted", "2 4"),
+        _ => ("solid", "none"),
+    }
+}
+
 /// Public `fn` `render_tau_ops_dashboard_shell` in `tau-dashboard-ui`.
 pub fn render_tau_ops_dashboard_shell() -> String {
     render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext::default())
@@ -1005,6 +1015,8 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
         .enumerate()
         .map(|(index, row)| {
             let row_id = format!("tau-ops-memory-graph-edge-{index}");
+            let (edge_style_token, edge_stroke_dasharray) =
+                derive_memory_graph_edge_style_contracts(row.relation_type.as_str());
             view! {
                 <li
                     id=row_id
@@ -1012,6 +1024,8 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                     data-target-memory-id=row.target_memory_id.clone()
                     data-relation-type=row.relation_type.clone()
                     data-relation-weight=row.effective_weight.clone()
+                    data-edge-style-token=edge_style_token
+                    data-edge-stroke-dasharray=edge_stroke_dasharray
                 ></li>
             }
         })
