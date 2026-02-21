@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 ROOT_MODULE="${REPO_ROOT}/crates/tau-gateway/src/gateway_openresponses.rs"
 EVENTS_MODULE="${REPO_ROOT}/crates/tau-gateway/src/gateway_openresponses/events_status.rs"
-MAX_LINES=260
+MAX_LINES=210
 
 if [[ ! -f "${ROOT_MODULE}" ]]; then
   echo "assertion failed (root module exists): ${ROOT_MODULE}" >&2
@@ -163,6 +163,16 @@ fi
 
 if rg -q '^async fn execute_openresponses_request\\b' "${ROOT_MODULE}"; then
   echo "assertion failed (openresponses execution handler moved): found 'execute_openresponses_request' in root module" >&2
+  exit 1
+fi
+
+if rg -q '^fn derive_gateway_preflight_token_limit\\b' "${ROOT_MODULE}"; then
+  echo "assertion failed (root utilities moved): found 'derive_gateway_preflight_token_limit' in root module" >&2
+  exit 1
+fi
+
+if rg -q '^fn validate_gateway_openresponses_bind\\b' "${ROOT_MODULE}"; then
+  echo "assertion failed (root utilities moved): found 'validate_gateway_openresponses_bind' in root module" >&2
   exit 1
 fi
 
