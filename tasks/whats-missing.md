@@ -20,17 +20,11 @@ This report tracks **remaining** gaps only and explicitly records what is alread
 | Fuzzing | Fuzz harnesses and deterministic fuzz-conformance tests are present | `fuzz/fuzz_targets/`, `scripts/qa/test-fuzz-contract.sh` |
 | Log lifecycle | Core log rotation primitives and integration tests are implemented | `crates/tau-core/src/log_rotation.rs`, `crates/tau-runtime/src/observability_loggers_runtime.rs:854`, `crates/tau-gateway/src/gateway_runtime.rs:1098` |
 | Operator docs/API docs | Operator deployment/controls and gateway endpoint reference docs are present | `docs/guides/operator-deployment-guide.md`, `docs/guides/operator-control-summary.md`, `docs/guides/gateway-api-reference.md` |
+| Dashboard consolidation | Dashboard consolidation is verified via gateway-owned runtime checks and ADR coverage | `scripts/dev/verify-dashboard-consolidation.sh`, `docs/architecture/adr-001-dashboard-consolidation.md` |
 
 ## Remaining High-Impact Gaps
 
-### 1) Legacy dashboard crate consolidation is incomplete
-
-`crates/tau-dashboard` remains contract/runtime-fixture oriented while operational dashboard surfaces are served from gateway and UI crates.
-
-- Legacy fixture crate: `crates/tau-dashboard/src/`
-- Active dashboard/runtime routes: `crates/tau-gateway/src/gateway_openresponses.rs`
-
-Impact: maintainability overhead from split ownership and duplicate dashboard concepts.
+None currently identified in this report snapshot. Keep validating periodically as implementation evolves.
 
 ## Verification Contract
 
