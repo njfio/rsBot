@@ -4,10 +4,10 @@ use super::{
     render_tau_ops_dashboard_shell_for_route, render_tau_ops_dashboard_shell_with_context,
     TauOpsDashboardAlertFeedRow, TauOpsDashboardAuthMode, TauOpsDashboardChatMessageRow,
     TauOpsDashboardChatSessionOptionRow, TauOpsDashboardChatSnapshot,
-    TauOpsDashboardCommandCenterSnapshot, TauOpsDashboardConnectorHealthRow, TauOpsDashboardRoute,
-    TauOpsDashboardSessionGraphEdgeRow, TauOpsDashboardSessionGraphNodeRow,
-    TauOpsDashboardSessionTimelineRow, TauOpsDashboardShellContext, TauOpsDashboardSidebarState,
-    TauOpsDashboardTheme,
+    TauOpsDashboardCommandCenterSnapshot, TauOpsDashboardConnectorHealthRow,
+    TauOpsDashboardMemoryGraphNodeRow, TauOpsDashboardRoute, TauOpsDashboardSessionGraphEdgeRow,
+    TauOpsDashboardSessionGraphNodeRow, TauOpsDashboardSessionTimelineRow,
+    TauOpsDashboardShellContext, TauOpsDashboardSidebarState, TauOpsDashboardTheme,
 };
 
 #[test]
@@ -1259,6 +1259,39 @@ fn regression_spec_3068_c03_non_memory_graph_routes_keep_hidden_graph_markers() 
     ));
     assert!(html.contains("id=\"tau-ops-memory-graph-nodes\" data-node-count=\"0\""));
     assert!(html.contains("id=\"tau-ops-memory-graph-edges\" data-edge-count=\"0\""));
+}
+
+#[test]
+fn functional_spec_3070_c01_c02_memory_graph_route_renders_node_size_markers_from_importance() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::MemoryGraph,
+        theme: TauOpsDashboardTheme::Light,
+        sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot {
+            memory_graph_node_rows: vec![
+                TauOpsDashboardMemoryGraphNodeRow {
+                    memory_id: "mem-size-low".to_string(),
+                    memory_type: "fact".to_string(),
+                    importance: "0.1000".to_string(),
+                },
+                TauOpsDashboardMemoryGraphNodeRow {
+                    memory_id: "mem-size-high".to_string(),
+                    memory_type: "goal".to_string(),
+                    importance: "0.9000".to_string(),
+                },
+            ],
+            ..TauOpsDashboardChatSnapshot::default()
+        },
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-memory-graph-node-0\" data-memory-id=\"mem-size-low\" data-memory-type=\"fact\" data-importance=\"0.1000\" data-node-size-bucket=\"small\" data-node-size-px=\"13.60\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-memory-graph-node-1\" data-memory-id=\"mem-size-high\" data-memory-type=\"goal\" data-importance=\"0.9000\" data-node-size-bucket=\"large\" data-node-size-px=\"26.40\""
+    ));
 }
 
 #[test]

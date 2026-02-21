@@ -2294,6 +2294,77 @@ async fn regression_spec_3068_c03_non_memory_graph_routes_keep_hidden_graph_mark
 }
 
 #[tokio::test]
+async fn integration_spec_3070_c02_ops_memory_graph_node_size_markers_follow_importance() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let session_key = "ops-memory-graph-size";
+    let low_create = client
+        .post(format!("http://{addr}/ops/memory"))
+        .form(&[
+            ("theme", "light"),
+            ("sidebar", "collapsed"),
+            ("session", session_key),
+            ("operation", "create"),
+            ("entry_id", "mem-size-low"),
+            ("summary", "Low importance"),
+            ("workspace_id", "workspace-size"),
+            ("channel_id", "channel-size"),
+            ("actor_id", "operator"),
+            ("memory_type", "fact"),
+            ("importance", "0.10"),
+        ])
+        .send()
+        .await
+        .expect("create low-importance memory entry");
+    assert_eq!(low_create.status(), StatusCode::OK);
+
+    let high_create = client
+        .post(format!("http://{addr}/ops/memory"))
+        .form(&[
+            ("theme", "light"),
+            ("sidebar", "collapsed"),
+            ("session", session_key),
+            ("operation", "create"),
+            ("entry_id", "mem-size-high"),
+            ("summary", "High importance"),
+            ("workspace_id", "workspace-size"),
+            ("channel_id", "channel-size"),
+            ("actor_id", "operator"),
+            ("memory_type", "goal"),
+            ("importance", "0.90"),
+        ])
+        .send()
+        .await
+        .expect("create high-importance memory entry");
+    assert_eq!(high_create.status(), StatusCode::OK);
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/memory-graph?theme=light&sidebar=collapsed&session={session_key}&workspace_id=workspace-size&channel_id=channel-size&actor_id=operator"
+        ))
+        .send()
+        .await
+        .expect("load ops memory graph size route");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response
+        .text()
+        .await
+        .expect("read ops memory graph size body");
+
+    assert!(body.contains(
+        "data-memory-id=\"mem-size-low\" data-memory-type=\"fact\" data-importance=\"0.1000\" data-node-size-bucket=\"small\" data-node-size-px=\"13.60\""
+    ));
+    assert!(body.contains(
+        "data-memory-id=\"mem-size-high\" data-memory-type=\"goal\" data-importance=\"0.9000\" data-node-size-bucket=\"large\" data-node-size-px=\"26.40\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2798_c04_ops_shell_exposes_responsive_and_theme_contract_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");
