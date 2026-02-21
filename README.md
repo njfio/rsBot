@@ -14,6 +14,8 @@ Operator deployment guide: `docs/guides/operator-deployment-guide.md`
 
 Gateway API reference (70+ routes): `docs/guides/gateway-api-reference.md`
 
+Dashboard ops guide: `docs/guides/dashboard-ops.md`
+
 Spec/branch archive workflow: `docs/guides/spec-branch-archive-ops.md`
 
 Contributor guide: `CONTRIBUTING.md`
@@ -44,6 +46,7 @@ Training boundary status:
 - GitHub Issues bridge and Slack Socket Mode bridge
 - Multi-channel runtime (Telegram/Discord/WhatsApp) with live-ingress and connector paths
 - Gateway OpenResponses/OpenAI-compatible HTTP APIs + websocket control plane + webchat shell
+- Leptos SSR Tau Ops Dashboard shell routes (`/ops`, `/ops/tools-jobs`, `/ops/channels`) with deterministic tools/jobs/channel operator contracts
 - Prompt optimization mode with SQLite-backed rollout state and optional attribution proxy
 - True-RL algorithm and benchmark primitives (PPO/GAE + benchmark/safety proof scripts)
 - Deterministic local demo scripts and CI smoke lanes
@@ -62,9 +65,9 @@ diagnostics-first or fixture/live-input driven:
   - Execution is delegated to an external Playwright-compatible CLI (`--browser-automation-playwright-cli`).
   - No embedded browser engine/DOM automation runtime is built into Tau itself.
 - Dashboard:
-  - Gateway dashboard APIs and status/health inspection are available.
+  - Gateway dashboard APIs and Leptos SSR ops shell routes are available (`/ops*`, including `/ops/tools-jobs` and `/ops/channels`).
   - `--dashboard-contract-runner` is removed.
-  - UI is a lightweight webchat shell plus API surfaces, not a full standalone rich dashboard app.
+  - Dashboard UX is route-based and contract-first; not all PRD surfaces are full live-mutation experiences yet.
 - Custom commands:
   - Status/health inspection and state artifacts are available.
   - `--custom-command-contract-runner` is removed from active dispatch.
