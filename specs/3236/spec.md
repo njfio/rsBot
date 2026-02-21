@@ -1,6 +1,6 @@
 # Spec: Issue #3236 - move gateway endpoint/path constants into module
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 `gateway_openresponses.rs` contains a large set of endpoint/path constants that contribute significant size and cognitive load to the root module. These constants are stable and can be centralized in a dedicated module.
