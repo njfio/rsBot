@@ -1382,6 +1382,59 @@ fn functional_spec_3082_c02_memory_graph_route_renders_edge_style_markers_from_r
 }
 
 #[test]
+fn functional_spec_3086_c02_memory_graph_route_renders_selected_node_detail_panel_contracts() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::MemoryGraph,
+        theme: TauOpsDashboardTheme::Light,
+        sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot {
+            active_session_key: "ops-memory-graph-detail".to_string(),
+            memory_search_workspace_id: "workspace-detail-graph".to_string(),
+            memory_search_channel_id: "channel-detail-graph".to_string(),
+            memory_search_actor_id: "operator".to_string(),
+            memory_search_memory_type: "goal".to_string(),
+            memory_detail_visible: true,
+            memory_detail_selected_entry_id: "mem-detail-graph".to_string(),
+            memory_detail_summary: "Graph detail summary".to_string(),
+            memory_detail_memory_type: "goal".to_string(),
+            memory_graph_node_rows: vec![
+                TauOpsDashboardMemoryGraphNodeRow {
+                    memory_id: "mem-detail-graph".to_string(),
+                    memory_type: "goal".to_string(),
+                    importance: "0.7000".to_string(),
+                },
+                TauOpsDashboardMemoryGraphNodeRow {
+                    memory_id: "mem-other-graph".to_string(),
+                    memory_type: "goal".to_string(),
+                    importance: "0.4000".to_string(),
+                },
+            ],
+            ..TauOpsDashboardChatSnapshot::default()
+        },
+    });
+
+    assert!(html.contains("id=\"tau-ops-memory-graph-node-0\" data-memory-id=\"mem-detail-graph\""));
+    assert!(html.contains("id=\"tau-ops-memory-graph-node-1\" data-memory-id=\"mem-other-graph\""));
+    assert!(html.contains("data-node-selected=\"true\""));
+    assert!(html.contains("data-node-selected=\"false\""));
+    assert!(html.contains("data-node-detail-href=\"/ops/memory-graph?theme=light"));
+    assert!(html.contains("detail_memory_id=mem-detail-graph"));
+    assert!(html.contains("detail_memory_id=mem-other-graph"));
+    assert!(html.contains(
+        "id=\"tau-ops-memory-graph-detail-panel\" data-detail-visible=\"true\" data-memory-id=\"mem-detail-graph\" data-memory-type=\"goal\" data-relation-count=\"0\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-memory-graph-detail-summary\" data-memory-id=\"mem-detail-graph\">Graph detail summary"
+    ));
+    assert!(html
+        .contains("id=\"tau-ops-memory-graph-detail-open-memory\" href=\"/ops/memory?theme=light"));
+    assert!(html.contains("id=\"tau-ops-memory-graph-detail-open-memory\""));
+    assert!(html.contains("data-detail-memory-id=\"mem-detail-graph\""));
+}
+
+#[test]
 fn functional_spec_2838_c01_c02_c03_sessions_route_renders_sessions_panel_list_rows_and_links() {
     let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
         auth_mode: TauOpsDashboardAuthMode::Token,

@@ -2554,6 +2554,87 @@ async fn integration_spec_3082_c02_ops_memory_graph_edge_style_markers_follow_re
 }
 
 #[tokio::test]
+async fn integration_spec_3086_c02_ops_memory_graph_selected_node_shows_detail_panel_contracts() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let session_key = "ops-memory-graph-detail-panel";
+    let selected_create = client
+        .post(format!("http://{addr}/ops/memory"))
+        .form(&[
+            ("theme", "light"),
+            ("sidebar", "collapsed"),
+            ("session", session_key),
+            ("operation", "create"),
+            ("entry_id", "mem-detail-graph"),
+            ("summary", "Graph detail selected summary"),
+            ("workspace_id", "workspace-detail-graph"),
+            ("channel_id", "channel-detail-graph"),
+            ("actor_id", "operator"),
+            ("memory_type", "goal"),
+            ("importance", "0.70"),
+        ])
+        .send()
+        .await
+        .expect("create selected graph memory entry");
+    assert_eq!(selected_create.status(), StatusCode::OK);
+
+    let other_create = client
+        .post(format!("http://{addr}/ops/memory"))
+        .form(&[
+            ("theme", "light"),
+            ("sidebar", "collapsed"),
+            ("session", session_key),
+            ("operation", "create"),
+            ("entry_id", "mem-other-graph"),
+            ("summary", "Graph detail unselected summary"),
+            ("workspace_id", "workspace-detail-graph"),
+            ("channel_id", "channel-detail-graph"),
+            ("actor_id", "operator"),
+            ("memory_type", "goal"),
+            ("importance", "0.40"),
+        ])
+        .send()
+        .await
+        .expect("create unselected graph memory entry");
+    assert_eq!(other_create.status(), StatusCode::OK);
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/memory-graph?theme=light&sidebar=collapsed&session={session_key}&workspace_id=workspace-detail-graph&channel_id=channel-detail-graph&actor_id=operator&memory_type=goal&detail_memory_id=mem-detail-graph"
+        ))
+        .send()
+        .await
+        .expect("load ops memory graph with selected detail");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response
+        .text()
+        .await
+        .expect("read ops memory graph selected detail body");
+
+    assert!(body.contains("id=\"tau-ops-memory-graph-node-0\" data-memory-id=\"mem-detail-graph\""));
+    assert!(body.contains("id=\"tau-ops-memory-graph-node-1\" data-memory-id=\"mem-other-graph\""));
+    assert!(body.contains("data-node-selected=\"true\""));
+    assert!(body.contains("data-node-selected=\"false\""));
+    assert!(body.contains("data-node-detail-href=\"/ops/memory-graph?theme=light"));
+    assert!(body.contains("detail_memory_id=mem-detail-graph"));
+    assert!(body.contains("detail_memory_id=mem-other-graph"));
+    assert!(body.contains(
+        "id=\"tau-ops-memory-graph-detail-panel\" data-detail-visible=\"true\" data-memory-id=\"mem-detail-graph\" data-memory-type=\"goal\" data-relation-count=\"0\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-memory-graph-detail-summary\" data-memory-id=\"mem-detail-graph\">Graph detail selected summary"
+    ));
+    assert!(body
+        .contains("id=\"tau-ops-memory-graph-detail-open-memory\" href=\"/ops/memory?theme=light"));
+    assert!(body.contains("data-detail-memory-id=\"mem-detail-graph\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2798_c04_ops_shell_exposes_responsive_and_theme_contract_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");
