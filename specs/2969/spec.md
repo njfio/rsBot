@@ -1,6 +1,6 @@
 # Spec: Issue #2969 - Split external agent runtime handlers from gateway_openresponses
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 `crates/tau-gateway/src/gateway_openresponses.rs` remains a hotspot. The external coding-agent endpoint domain is implemented inline, increasing module size and review complexity. This phase extracts that domain into a dedicated runtime module without changing HTTP contracts.
