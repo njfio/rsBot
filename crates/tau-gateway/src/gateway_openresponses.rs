@@ -54,6 +54,7 @@ mod dashboard_shell_page;
 mod dashboard_status;
 mod deploy_runtime;
 mod endpoints;
+mod entry_handlers;
 mod events_status;
 mod external_agent_runtime;
 mod jobs_runtime;
@@ -105,6 +106,7 @@ use dashboard_runtime::{
     handle_dashboard_health, handle_dashboard_queue_timeline, handle_dashboard_stream,
     handle_dashboard_widgets, handle_gateway_training_status,
 };
+#[cfg(test)]
 use dashboard_shell_page::render_gateway_dashboard_shell_page;
 use dashboard_status::{
     apply_gateway_dashboard_action, collect_gateway_dashboard_snapshot,
@@ -112,6 +114,9 @@ use dashboard_status::{
 };
 use deploy_runtime::{handle_gateway_agent_stop, handle_gateway_deploy};
 use endpoints::*;
+use entry_handlers::{
+    handle_dashboard_shell_page, handle_gateway_auth_bootstrap, handle_webchat_page,
+};
 use events_status::collect_gateway_events_status_report;
 use external_agent_runtime::{
     handle_external_coding_agent_open_session, handle_external_coding_agent_reap,
@@ -137,7 +142,6 @@ use ops_dashboard_shell::{
     handle_ops_dashboard_chat_new, handle_ops_dashboard_chat_send,
     handle_ops_dashboard_memory_create, handle_ops_dashboard_session_detail_reset,
     handle_ops_dashboard_sessions_branch, render_tau_ops_dashboard_shell_for_route,
-    resolve_tau_ops_dashboard_auth_mode,
 };
 use ops_shell_controls::OpsShellControlsQuery;
 use ops_shell_handlers::{
@@ -173,47 +177,18 @@ pub use tool_registrar::{GatewayToolRegistrar, GatewayToolRegistrarFn, NoopGatew
 use tools_runtime::{handle_gateway_tools_inventory, handle_gateway_tools_stats};
 use training_runtime::{handle_gateway_training_config_patch, handle_gateway_training_rollouts};
 use types::{
-    GatewayAuthBootstrapResponse, GatewayAuthSessionRequest, GatewayAuthSessionResponse,
-    GatewayMemoryEntryDeleteRequest, GatewayMemoryEntryUpsertRequest, GatewayMemoryGraphEdge,
-    GatewayMemoryGraphFilterSummary, GatewayMemoryGraphNode, GatewayMemoryGraphQuery,
-    GatewayMemoryGraphResponse, GatewayMemoryReadQuery, GatewayMemoryUpdateRequest,
-    GatewaySafetyPolicyUpdateRequest, GatewaySafetyRulesUpdateRequest, GatewaySafetyTestRequest,
-    OpenResponsesApiError, OpenResponsesExecutionResult, OpenResponsesOutputItem,
-    OpenResponsesOutputTextItem, OpenResponsesPrompt, OpenResponsesRequest, OpenResponsesResponse,
-    OpenResponsesUsage, OpenResponsesUsageSummary, SseFrame,
+    GatewayAuthSessionRequest, GatewayAuthSessionResponse, GatewayMemoryEntryDeleteRequest,
+    GatewayMemoryEntryUpsertRequest, GatewayMemoryGraphEdge, GatewayMemoryGraphFilterSummary,
+    GatewayMemoryGraphNode, GatewayMemoryGraphQuery, GatewayMemoryGraphResponse,
+    GatewayMemoryReadQuery, GatewayMemoryUpdateRequest, GatewaySafetyPolicyUpdateRequest,
+    GatewaySafetyRulesUpdateRequest, GatewaySafetyTestRequest, OpenResponsesApiError,
+    OpenResponsesExecutionResult, OpenResponsesOutputItem, OpenResponsesOutputTextItem,
+    OpenResponsesPrompt, OpenResponsesRequest, OpenResponsesResponse, OpenResponsesUsage,
+    OpenResponsesUsageSummary, SseFrame,
 };
+#[cfg(test)]
 use webchat_page::render_gateway_webchat_page;
 use websocket::run_gateway_ws_connection;
-
-async fn handle_webchat_page() -> Html<String> {
-    Html(render_gateway_webchat_page())
-}
-
-async fn handle_dashboard_shell_page() -> Html<String> {
-    Html(render_gateway_dashboard_shell_page())
-}
-
-async fn handle_gateway_auth_bootstrap(
-    State(state): State<Arc<GatewayOpenResponsesServerState>>,
-) -> Response {
-    if let Err(error) = enforce_gateway_rate_limit(&state, "gateway_auth_bootstrap") {
-        return error.into_response();
-    }
-
-    let auth_mode = resolve_tau_ops_dashboard_auth_mode(state.config.auth_mode);
-    (
-        StatusCode::OK,
-        Json(GatewayAuthBootstrapResponse {
-            auth_mode: state.config.auth_mode.as_str().to_string(),
-            ui_auth_mode: auth_mode.as_str().to_string(),
-            requires_authentication: auth_mode.requires_authentication(),
-            ops_endpoint: OPS_DASHBOARD_ENDPOINT,
-            ops_login_endpoint: OPS_DASHBOARD_LOGIN_ENDPOINT,
-            auth_session_endpoint: GATEWAY_AUTH_SESSION_ENDPOINT,
-        }),
-    )
-        .into_response()
-}
 
 async fn handle_openresponses(
     State(state): State<Arc<GatewayOpenResponsesServerState>>,
