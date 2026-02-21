@@ -1,6 +1,6 @@
 # Spec: Issue #2963 - Add gateway API reference doc and validate route coverage
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 Gateway exposes a broad HTTP surface (OpenResponses, OpenAI-compatible adapters, sessions,
