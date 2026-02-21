@@ -1,6 +1,6 @@
 # Spec: Issue #3240 - move gateway server config/state types into module
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 `gateway_openresponses.rs` still owns gateway server config/state type definitions and basic state helper methods. This keeps core runtime-state concerns in the root module and slows decomposition.
