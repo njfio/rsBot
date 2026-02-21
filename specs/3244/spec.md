@@ -1,6 +1,6 @@
 # Spec: Issue #3244 - move gateway bootstrap/router wiring into module
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 `gateway_openresponses.rs` still contains bootstrap/runtime startup flow and large router assembly wiring. Keeping these orchestration responsibilities in root increases file size and coupling, slowing future decomposition.
