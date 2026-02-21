@@ -60,6 +60,7 @@ assert_contains "${operator_contents}" "## Rollback Procedure" "operator rollbac
 assert_contains "${api_contents}" "**Route inventory:** 70 router route calls" "api route inventory marker"
 assert_contains "${api_contents}" "## Endpoint Inventory (78 method-path entries)" "api method-path inventory marker"
 assert_contains "${api_contents}" "## Route-Coverage Validation Procedure" "api validation section"
+assert_contains "${api_contents}" "scripts/dev/gateway-api-route-inventory.sh" "api drift-check command"
 
 assert_contains "${archive_contents}" "## Implemented Spec Archive" "archive guide implemented specs"
 assert_contains "${archive_contents}" "## Merged Branch Archive Workflow" "archive guide branch workflow"
