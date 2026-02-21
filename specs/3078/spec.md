@@ -1,6 +1,6 @@
 # Spec: Issue #3078 - ops memory-graph node color type contracts
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 `/ops/memory-graph` now exposes deterministic node/edge and node-size contracts,
