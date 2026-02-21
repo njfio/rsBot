@@ -1,6 +1,41 @@
 //! AuthN/AuthZ and rate-limit runtime helpers for gateway OpenResponses.
 use super::*;
 
+#[derive(Debug, Clone, Default)]
+pub(super) struct GatewayAuthRuntimeState {
+    pub(super) sessions: BTreeMap<String, GatewaySessionTokenState>,
+    pub(super) total_sessions_issued: u64,
+    pub(super) auth_failures: u64,
+    pub(super) rate_limited_requests: u64,
+    pub(super) rate_limit_buckets: BTreeMap<String, GatewayRateLimitBucket>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct GatewaySessionTokenState {
+    pub(super) expires_unix_ms: u64,
+    pub(super) last_seen_unix_ms: u64,
+    pub(super) request_count: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(super) struct GatewayRateLimitBucket {
+    pub(super) window_started_unix_ms: u64,
+    pub(super) accepted_requests: usize,
+    pub(super) rejected_requests: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub(super) struct GatewayAuthStatusReport {
+    mode: String,
+    session_ttl_seconds: u64,
+    active_sessions: usize,
+    total_sessions_issued: u64,
+    auth_failures: u64,
+    rate_limited_requests: u64,
+    rate_limit_window_seconds: u64,
+    rate_limit_max_requests: usize,
+}
+
 fn bearer_token_from_headers(headers: &HeaderMap) -> Option<String> {
     let header = headers.get(AUTHORIZATION)?;
     let raw = header.to_str().ok()?;

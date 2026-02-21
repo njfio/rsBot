@@ -78,7 +78,7 @@ mod websocket;
 use audit_runtime::{handle_gateway_audit_log, handle_gateway_audit_summary};
 use auth_runtime::{
     authorize_gateway_request, collect_gateway_auth_status_report, enforce_gateway_rate_limit,
-    issue_gateway_session_token,
+    issue_gateway_session_token, GatewayAuthRuntimeState,
 };
 use channel_telemetry_runtime::{
     handle_gateway_channel_lifecycle_action, handle_gateway_ui_telemetry,
@@ -358,41 +358,6 @@ impl GatewayOpenResponsesServerState {
         self.cortex
             .compose_system_prompt(self.config.system_prompt.as_str())
     }
-}
-
-#[derive(Debug, Clone, Default)]
-struct GatewayAuthRuntimeState {
-    sessions: BTreeMap<String, GatewaySessionTokenState>,
-    total_sessions_issued: u64,
-    auth_failures: u64,
-    rate_limited_requests: u64,
-    rate_limit_buckets: BTreeMap<String, GatewayRateLimitBucket>,
-}
-
-#[derive(Debug, Clone)]
-struct GatewaySessionTokenState {
-    expires_unix_ms: u64,
-    last_seen_unix_ms: u64,
-    request_count: u64,
-}
-
-#[derive(Debug, Clone, Default)]
-struct GatewayRateLimitBucket {
-    window_started_unix_ms: u64,
-    accepted_requests: usize,
-    rejected_requests: usize,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-struct GatewayAuthStatusReport {
-    mode: String,
-    session_ttl_seconds: u64,
-    active_sessions: usize,
-    total_sessions_issued: u64,
-    auth_failures: u64,
-    rate_limited_requests: u64,
-    rate_limit_window_seconds: u64,
-    rate_limit_max_requests: usize,
 }
 
 /// Public `fn` `run_gateway_openresponses_server` in `tau-gateway`.
