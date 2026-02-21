@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 ROOT_MODULE="${REPO_ROOT}/crates/tau-gateway/src/gateway_openresponses.rs"
 EVENTS_MODULE="${REPO_ROOT}/crates/tau-gateway/src/gateway_openresponses/events_status.rs"
-MAX_LINES=860
+MAX_LINES=680
 
 if [[ ! -f "${ROOT_MODULE}" ]]; then
   echo "assertion failed (root module exists): ${ROOT_MODULE}" >&2
@@ -88,6 +88,25 @@ done
 for function_name in run_gateway_openresponses_server build_gateway_openresponses_router; do
   if rg -q "^(pub\\s+)?(async\\s+)?fn ${function_name}\\b" "${ROOT_MODULE}"; then
     echo "assertion failed (bootstrap/router functions moved): found '${function_name}' in root module" >&2
+    exit 1
+  fi
+done
+
+if rg -q '^macro_rules! define_ops_shell_handler' "${ROOT_MODULE}"; then
+  echo "assertion failed (ops shell handlers moved): found 'define_ops_shell_handler' macro in root module" >&2
+  exit 1
+fi
+
+if rg -q '^define_ops_shell_handler!' "${ROOT_MODULE}"; then
+  echo "assertion failed (ops shell handlers moved): found macro invocations in root module" >&2
+  exit 1
+fi
+
+for function_name in \
+  handle_ops_dashboard_agent_detail_shell_page \
+  handle_ops_dashboard_session_detail_shell_page; do
+  if rg -q "^async fn ${function_name}\\b" "${ROOT_MODULE}"; then
+    echo "assertion failed (ops shell handlers moved): found '${function_name}' in root module" >&2
     exit 1
   fi
 done
