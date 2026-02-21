@@ -39,13 +39,20 @@ pub struct BrowserDidInitReport {
 }
 
 pub fn initialize_browser_did(request: &BrowserDidInitRequest) -> Result<BrowserDidInitReport> {
+    let method = request.method.as_str();
+    let network = request.network.trim();
+    let subject = request.subject.trim();
     let identity = kamn_core::build_browser_did_identity(&BrowserDidIdentityRequest {
         method: request.method,
         network: request.network.clone(),
         subject: request.subject.clone(),
         entropy: request.entropy.clone(),
     })
-    .map_err(|error| anyhow!("failed to build browser DID identity: {error}"))?;
+    .map_err(|error| {
+        anyhow!(
+            "failed to build browser DID identity (method={method}, network={network}, subject={subject}): {error}"
+        )
+    })?;
 
     Ok(BrowserDidInitReport {
         schema_version: KAMN_DID_SCHEMA_VERSION,
@@ -267,6 +274,47 @@ mod tests {
                 .map(|did| did.starts_with("did:web:edge:tau:operator")),
             Some(true)
         );
+    }
+
+    #[test]
+    fn spec_c04_initialize_browser_did_error_includes_request_context_without_entropy() {
+        let request = BrowserDidInitRequest {
+            method: DidMethod::Web,
+            network: "edge..tau".to_string(),
+            subject: "operator".to_string(),
+            entropy: "super-secret-seed".to_string(),
+        };
+
+        let error = initialize_browser_did(&request).expect_err("malformed network must fail");
+        let message = error.to_string();
+        assert!(message.contains("failed to build browser DID identity"));
+        assert!(message.contains("method=web"));
+        assert!(message.contains("network=edge..tau"));
+        assert!(message.contains("subject=operator"));
+        assert!(!message.contains("super-secret-seed"));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn spec_c05_write_browser_did_init_report_rejects_parent_file_path_with_context() {
+        let temp = tempdir().expect("tempdir");
+        let parent_file = temp.path().join("reports");
+        std::fs::write(&parent_file, "occupied").expect("write parent file");
+        let output = parent_file.join("browser-did.json");
+        let report = initialize_browser_did(&BrowserDidInitRequest {
+            method: DidMethod::Key,
+            network: "tau-devnet".to_string(),
+            subject: "agent".to_string(),
+            entropy: "seed".to_string(),
+        })
+        .expect("initialize report");
+
+        let error = super::write_browser_did_init_report(&output, &report)
+            .expect_err("parent path file boundary must fail");
+        let message = error.to_string();
+        assert!(message.contains("failed to create"));
+        assert!(message.contains("reports"));
+        assert!(!output.exists());
     }
 
     #[cfg(not(target_arch = "wasm32"))]
