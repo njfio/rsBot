@@ -18,6 +18,106 @@ is_test_path() {
   [[ "${path}" == *"/tests/"* ]] || [[ "${path}" == *"/src/tests/"* ]] || [[ "${path}" == *"tests.rs" ]] || [[ "${path}" == *"_test.rs" ]]
 }
 
+declare -A TEST_CONTEXT_CACHE=()
+
+is_test_context_line() {
+  local path="$1"
+  local line_number="$2"
+  local cache_key="${path}:${line_number}"
+
+  if [[ -n "${TEST_CONTEXT_CACHE[${cache_key}]+x}" ]]; then
+    [[ "${TEST_CONTEXT_CACHE[${cache_key}]}" == "1" ]]
+    return
+  fi
+
+  if [[ ! -f "${path}" ]]; then
+    TEST_CONTEXT_CACHE["${cache_key}"]="0"
+    return 1
+  fi
+
+  local result
+  result="$(
+    awk -v target_line="${line_number}" '
+      function has_test_attribute(text) {
+        return text ~ /#\[cfg\([^]]*test[^]]*\)\]/ || text ~ /#\[[^]]*test[^]]*\]/
+      }
+
+      BEGIN {
+        depth = 0
+        pending_test = 0
+        line_is_test = 0
+      }
+
+      {
+        line = $0
+
+        if (line !~ /#\[cfg_attr\(/ && has_test_attribute(line)) {
+          pending_test = 1
+        }
+
+        current_test = 0
+        for (d = 1; d <= depth; d++) {
+          if (test_depth[d] == 1) {
+            current_test = 1
+            break
+          }
+        }
+
+        if (NR == target_line) {
+          line_is_test = current_test
+        }
+
+        for (i = 1; i <= length(line); i++) {
+          ch = substr(line, i, 1)
+          if (ch == "{") {
+            depth += 1
+            parent_test = (depth > 1 ? test_depth[depth - 1] : 0)
+            if (pending_test == 1) {
+              test_depth[depth] = 1
+              pending_test = 0
+            } else {
+              test_depth[depth] = parent_test
+            }
+          } else if (ch == "}") {
+            if (depth > 0) {
+              delete test_depth[depth]
+              depth -= 1
+            }
+          }
+        }
+
+        if (pending_test == 1 && line ~ /;[[:space:]]*$/) {
+          pending_test = 0
+        }
+
+        if (NR == target_line && line_is_test == 0) {
+          post_test = 0
+          for (d = 1; d <= depth; d++) {
+            if (test_depth[d] == 1) {
+              post_test = 1
+              break
+            }
+          }
+          if (line ~ /panic!\(|unsafe[[:space:]]*\{|unsafe[[:space:]]+fn/) {
+            line_is_test = post_test
+          }
+        }
+      }
+
+      END {
+        if (line_is_test == 1) {
+          print 1
+        } else {
+          print 0
+        }
+      }
+    ' "${path}"
+  )"
+
+  TEST_CONTEXT_CACHE["${cache_key}"]="${result}"
+  [[ "${result}" == "1" ]]
+}
+
 print_group() {
   local title="$1"
   shift
@@ -47,7 +147,9 @@ summarize_matches() {
     [ -z "${line}" ] && continue
     total=$((total + 1))
     local path="${line%%:*}"
-    if is_test_path "${path}"; then
+    local remainder="${line#*:}"
+    local line_number="${remainder%%:*}"
+    if is_test_path "${path}" || is_test_context_line "${path}" "${line_number}"; then
       test_count=$((test_count + 1))
       test_lines+=("${line}")
     else

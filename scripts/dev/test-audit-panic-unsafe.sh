@@ -17,11 +17,11 @@ assert_contains() {
   fi
 }
 
-assert_contains "panic_total=3"
-assert_contains "panic_test_path=2"
+assert_contains "panic_total=4"
+assert_contains "panic_test_path=3"
 assert_contains "panic_non_test_path=1"
-assert_contains "unsafe_total=2"
-assert_contains "unsafe_test_path=1"
+assert_contains "unsafe_total=3"
+assert_contains "unsafe_test_path=2"
 assert_contains "unsafe_non_test_path=1"
 
 echo "audit-panic-unsafe fixture conformance passed"
