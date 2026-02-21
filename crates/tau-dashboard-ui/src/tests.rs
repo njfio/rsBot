@@ -8,7 +8,8 @@ use super::{
     TauOpsDashboardMemoryGraphEdgeRow, TauOpsDashboardMemoryGraphNodeRow, TauOpsDashboardRoute,
     TauOpsDashboardSessionGraphEdgeRow, TauOpsDashboardSessionGraphNodeRow,
     TauOpsDashboardSessionTimelineRow, TauOpsDashboardShellContext, TauOpsDashboardSidebarState,
-    TauOpsDashboardTheme, TauOpsDashboardToolInventoryRow,
+    TauOpsDashboardTheme, TauOpsDashboardToolInventoryRow, TauOpsDashboardToolInvocationRow,
+    TauOpsDashboardToolUsageHistogramRow,
 };
 
 #[test]
@@ -1698,6 +1699,118 @@ fn regression_spec_3106_c04_non_tools_routes_keep_hidden_tools_panel_markers() {
     ));
     assert!(html.contains("id=\"tau-ops-tools-inventory-summary\" data-total-tools=\"0\""));
     assert!(html.contains("id=\"tau-ops-tools-inventory-table\" data-row-count=\"0\""));
+}
+
+#[test]
+fn functional_spec_3112_c01_c02_tools_route_renders_tool_detail_metadata_and_policy_markers() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::ToolsJobs,
+        theme: TauOpsDashboardTheme::Light,
+        sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot {
+            tools_inventory_rows: vec![TauOpsDashboardToolInventoryRow {
+                tool_name: "bash".to_string(),
+                category: "Code".to_string(),
+                policy: "allowed".to_string(),
+                usage_count: 6,
+                error_rate: "0.00".to_string(),
+                avg_latency_ms: "12.00".to_string(),
+                last_used_unix_ms: 1003,
+            }],
+            tool_detail_selected_tool_name: "bash".to_string(),
+            tool_detail_description: "Runs shell commands.".to_string(),
+            tool_detail_parameter_schema: "{\"type\":\"object\",\"properties\":{}}".to_string(),
+            tool_detail_policy_timeout_ms: 120_000,
+            tool_detail_policy_max_output_chars: 32_768,
+            tool_detail_policy_sandbox_mode: "default".to_string(),
+            ..TauOpsDashboardChatSnapshot::default()
+        },
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-tool-detail-panel\" data-selected-tool=\"bash\" data-detail-visible=\"true\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-tool-detail-metadata\" data-tool-name=\"bash\" data-parameter-schema=\"{&quot;type&quot;:&quot;object&quot;,&quot;properties&quot;:{}}\""
+    ));
+    assert!(html.contains("id=\"tau-ops-tool-detail-description\""));
+    assert!(html.contains("Runs shell commands."));
+    assert!(html.contains(
+        "id=\"tau-ops-tool-detail-policy\" data-timeout-ms=\"120000\" data-max-output-chars=\"32768\" data-sandbox-mode=\"default\""
+    ));
+}
+
+#[test]
+fn functional_spec_3112_c03_tools_route_renders_usage_histogram_and_recent_invocation_markers() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::ToolsJobs,
+        theme: TauOpsDashboardTheme::Light,
+        sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot {
+            tools_inventory_rows: vec![TauOpsDashboardToolInventoryRow {
+                tool_name: "bash".to_string(),
+                category: "Code".to_string(),
+                policy: "allowed".to_string(),
+                usage_count: 6,
+                error_rate: "0.00".to_string(),
+                avg_latency_ms: "12.00".to_string(),
+                last_used_unix_ms: 1003,
+            }],
+            tool_detail_selected_tool_name: "bash".to_string(),
+            tool_detail_usage_histogram_rows: vec![
+                TauOpsDashboardToolUsageHistogramRow {
+                    hour_offset: 0,
+                    call_count: 6,
+                },
+                TauOpsDashboardToolUsageHistogramRow {
+                    hour_offset: 1,
+                    call_count: 4,
+                },
+            ],
+            tool_detail_recent_invocation_rows: vec![TauOpsDashboardToolInvocationRow {
+                timestamp_unix_ms: 1_700_000_123_000,
+                args_summary: "{\"command\":\"ls\"}".to_string(),
+                result_summary: "exit=0".to_string(),
+                duration_ms: 18,
+                status: "success".to_string(),
+            }],
+            ..TauOpsDashboardChatSnapshot::default()
+        },
+    });
+
+    assert!(html.contains("id=\"tau-ops-tool-detail-usage-histogram\" data-bucket-count=\"2\""));
+    assert!(html.contains(
+        "id=\"tau-ops-tool-detail-usage-bucket-0\" data-hour-offset=\"0\" data-call-count=\"6\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-tool-detail-usage-bucket-1\" data-hour-offset=\"1\" data-call-count=\"4\""
+    ));
+    assert!(html.contains("id=\"tau-ops-tool-detail-invocations\" data-row-count=\"1\""));
+    assert!(html.contains(
+        "id=\"tau-ops-tool-detail-invocation-row-0\" data-timestamp-unix-ms=\"1700000123000\" data-args-summary=\"{&quot;command&quot;:&quot;ls&quot;}\" data-result-summary=\"exit=0\" data-duration-ms=\"18\" data-status=\"success\""
+    ));
+}
+
+#[test]
+fn regression_spec_3112_c04_non_tools_routes_keep_hidden_tool_detail_markers() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::Chat,
+        theme: TauOpsDashboardTheme::Dark,
+        sidebar_state: TauOpsDashboardSidebarState::Expanded,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot::default(),
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-tool-detail-panel\" data-selected-tool=\"\" data-detail-visible=\"false\""
+    ));
+    assert!(html.contains("id=\"tau-ops-tool-detail-usage-histogram\" data-bucket-count=\"0\""));
+    assert!(html.contains("id=\"tau-ops-tool-detail-invocations\" data-row-count=\"0\""));
 }
 
 #[test]
