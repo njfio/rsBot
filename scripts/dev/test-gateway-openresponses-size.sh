@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 ROOT_MODULE="${REPO_ROOT}/crates/tau-gateway/src/gateway_openresponses.rs"
 EVENTS_MODULE="${REPO_ROOT}/crates/tau-gateway/src/gateway_openresponses/events_status.rs"
-MAX_LINES=470
+MAX_LINES=410
 
 if [[ ! -f "${ROOT_MODULE}" ]]; then
   echo "assertion failed (root module exists): ${ROOT_MODULE}" >&2
@@ -153,6 +153,11 @@ fi
 
 if rg -q '^async fn handle_gateway_auth_session\\b' "${ROOT_MODULE}"; then
   echo "assertion failed (auth session handler moved): found 'handle_gateway_auth_session' in root module" >&2
+  exit 1
+fi
+
+if rg -q '^async fn handle_openresponses\\b' "${ROOT_MODULE}"; then
+  echo "assertion failed (openresponses entry handler moved): found 'handle_openresponses' in root module" >&2
   exit 1
 fi
 
