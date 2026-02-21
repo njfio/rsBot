@@ -4015,6 +4015,113 @@ proptest! {
     }
 }
 
+proptest! {
+    #[test]
+    fn spec_3152_c03_rate_limit_allows_do_not_exceed_capacity_per_window(
+        max_requests in 1u32..24,
+        window_ms in 1u64..10_000,
+        request_count in 1usize..80,
+    ) {
+        let mut policy = ToolPolicy::new(vec![PathBuf::from(".")]);
+        policy.tool_rate_limit_max_requests = max_requests;
+        policy.tool_rate_limit_window_ms = window_ms;
+
+        let principal = "prop:spec-3152-c03";
+        let base_unix_ms = 1_000_000_u64;
+        let mut allowed = 0usize;
+        let mut throttled = 0usize;
+
+        for _ in 0..request_count {
+            match policy.evaluate_rate_limit(principal, base_unix_ms) {
+                None => allowed = allowed.saturating_add(1),
+                Some((retry_after_ms, principal_throttle_events, throttle_events_total)) => {
+                    throttled = throttled.saturating_add(1);
+                    prop_assert!(retry_after_ms <= window_ms);
+                    prop_assert_eq!(principal_throttle_events as usize, throttled);
+                    prop_assert_eq!(throttle_events_total as usize, throttled);
+                }
+            }
+        }
+
+        let expected_allowed = request_count.min(max_requests as usize);
+        let expected_throttled = request_count.saturating_sub(max_requests as usize);
+        prop_assert_eq!(allowed, expected_allowed);
+        prop_assert_eq!(throttled, expected_throttled);
+
+        let counters = policy.rate_limit_counters();
+        prop_assert_eq!(counters.tracked_principals, 1);
+        prop_assert_eq!(counters.throttle_events_total as usize, expected_throttled);
+    }
+
+    #[test]
+    fn spec_3152_c04_rate_limit_retry_after_is_bounded_by_window(
+        max_requests in 1u32..24,
+        window_ms in 1u64..10_000,
+        elapsed_seed in any::<u64>(),
+    ) {
+        let mut policy = ToolPolicy::new(vec![PathBuf::from(".")]);
+        policy.tool_rate_limit_max_requests = max_requests;
+        policy.tool_rate_limit_window_ms = window_ms;
+
+        let principal = "prop:spec-3152-c04";
+        let start_unix_ms = 2_000_000_u64;
+        for _ in 0..max_requests {
+            prop_assert!(policy.evaluate_rate_limit(principal, start_unix_ms).is_none());
+        }
+
+        let elapsed = elapsed_seed % window_ms;
+        let (retry_after_ms, principal_throttle_events, throttle_events_total) = policy
+            .evaluate_rate_limit(principal, start_unix_ms.saturating_add(elapsed))
+            .expect("bucket should throttle after capacity is consumed");
+        prop_assert!(retry_after_ms <= window_ms);
+        prop_assert_eq!(retry_after_ms, window_ms.saturating_sub(elapsed));
+        prop_assert_eq!(principal_throttle_events, 1);
+        prop_assert_eq!(throttle_events_total, 1);
+    }
+
+    #[test]
+    fn spec_3152_c05_rate_limit_principal_quotas_are_isolated(
+        max_requests in 1u32..24,
+        window_ms in 1u64..10_000,
+        requests_a in 1usize..80,
+        requests_b in 1usize..80,
+    ) {
+        let mut policy = ToolPolicy::new(vec![PathBuf::from(".")]);
+        policy.tool_rate_limit_max_requests = max_requests;
+        policy.tool_rate_limit_window_ms = window_ms;
+
+        let start_unix_ms = 3_000_000_u64;
+        let mut allowed_a = 0usize;
+        let mut allowed_b = 0usize;
+        for _ in 0..requests_a {
+            if policy
+                .evaluate_rate_limit("prop:spec-3152-c05:a", start_unix_ms)
+                .is_none()
+            {
+                allowed_a = allowed_a.saturating_add(1);
+            }
+        }
+        for _ in 0..requests_b {
+            if policy
+                .evaluate_rate_limit("prop:spec-3152-c05:b", start_unix_ms)
+                .is_none()
+            {
+                allowed_b = allowed_b.saturating_add(1);
+            }
+        }
+
+        prop_assert_eq!(allowed_a, requests_a.min(max_requests as usize));
+        prop_assert_eq!(allowed_b, requests_b.min(max_requests as usize));
+
+        let expected_throttles = requests_a
+            .saturating_sub(max_requests as usize)
+            .saturating_add(requests_b.saturating_sub(max_requests as usize));
+        let counters = policy.rate_limit_counters();
+        prop_assert_eq!(counters.tracked_principals, 2);
+        prop_assert_eq!(counters.throttle_events_total as usize, expected_throttles);
+    }
+}
+
 #[test]
 fn redact_secrets_replaces_sensitive_env_values() {
     std::env::set_var("TEST_API_KEY", "secret-value-123");
