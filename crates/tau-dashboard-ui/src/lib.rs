@@ -422,6 +422,11 @@ pub struct TauOpsDashboardChatSnapshot {
     pub tool_detail_usage_histogram_rows: Vec<TauOpsDashboardToolUsageHistogramRow>,
     pub tool_detail_recent_invocation_rows: Vec<TauOpsDashboardToolInvocationRow>,
     pub jobs_rows: Vec<TauOpsDashboardJobRow>,
+    pub job_detail_selected_job_id: String,
+    pub job_detail_status: String,
+    pub job_detail_duration_ms: u64,
+    pub job_detail_stdout: String,
+    pub job_detail_stderr: String,
 }
 
 impl Default for TauOpsDashboardChatSnapshot {
@@ -508,6 +513,11 @@ impl Default for TauOpsDashboardChatSnapshot {
             tool_detail_usage_histogram_rows: vec![],
             tool_detail_recent_invocation_rows: vec![],
             jobs_rows: vec![],
+            job_detail_selected_job_id: String::new(),
+            job_detail_status: String::new(),
+            job_detail_duration_ms: 0,
+            job_detail_stdout: String::new(),
+            job_detail_stderr: String::new(),
         }
     }
 }
@@ -1521,6 +1531,44 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                 })
                 .collect_view(),
         )
+    };
+    let job_detail_selected_job_id = {
+        let selected = context.chat.job_detail_selected_job_id.trim();
+        if !selected.is_empty() {
+            selected.to_string()
+        } else {
+            jobs_rows
+                .first()
+                .map(|row| row.job_id.clone())
+                .unwrap_or_default()
+        }
+    };
+    let selected_job_row = jobs_rows
+        .iter()
+        .find(|row| row.job_id.as_str() == job_detail_selected_job_id.as_str());
+    let job_detail_status = if context.chat.job_detail_status.trim().is_empty() {
+        selected_job_row
+            .map(|row| row.job_status.clone())
+            .unwrap_or_default()
+    } else {
+        context.chat.job_detail_status.clone()
+    };
+    let job_detail_duration_ms_value = if context.chat.job_detail_duration_ms == 0 {
+        selected_job_row
+            .map(|row| row.finished_unix_ms.saturating_sub(row.started_unix_ms))
+            .unwrap_or(0)
+    } else {
+        context.chat.job_detail_duration_ms
+    };
+    let job_detail_duration_ms = job_detail_duration_ms_value.to_string();
+    let job_detail_stdout = context.chat.job_detail_stdout.clone();
+    let job_detail_stdout_bytes = job_detail_stdout.len().to_string();
+    let job_detail_stderr = context.chat.job_detail_stderr.clone();
+    let job_detail_stderr_bytes = job_detail_stderr.len().to_string();
+    let job_detail_visible = if tools_jobs_route_active && !job_detail_selected_job_id.is_empty() {
+        "true"
+    } else {
+        "false"
     };
     let session_detail_panel_hidden =
         if matches!(context.active_route, TauOpsDashboardRoute::Sessions)
@@ -2968,6 +3016,32 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                         {jobs_rows_view}
                                     </tbody>
                                 </table>
+                            </section>
+                            <section
+                                id="tau-ops-job-detail-panel"
+                                data-selected-job-id=job_detail_selected_job_id.clone()
+                                data-detail-visible=job_detail_visible
+                            >
+                                <section
+                                    id="tau-ops-job-detail-metadata"
+                                    data-job-id=job_detail_selected_job_id.clone()
+                                    data-job-status=job_detail_status.clone()
+                                    data-duration-ms=job_detail_duration_ms
+                                >
+                                    <h4>Selected Job Output</h4>
+                                </section>
+                                <pre
+                                    id="tau-ops-job-detail-stdout"
+                                    data-output-bytes=job_detail_stdout_bytes
+                                >
+                                    {job_detail_stdout}
+                                </pre>
+                                <pre
+                                    id="tau-ops-job-detail-stderr"
+                                    data-output-bytes=job_detail_stderr_bytes
+                                >
+                                    {job_detail_stderr}
+                                </pre>
                             </section>
                         </section>
                         <section

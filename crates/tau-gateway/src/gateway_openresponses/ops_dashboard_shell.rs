@@ -646,6 +646,44 @@ fn collect_ops_jobs_rows() -> Vec<TauOpsDashboardJobRow> {
     ]
 }
 
+fn resolve_ops_selected_job_id(
+    controls: &OpsShellControlsQuery,
+    jobs_rows: &[TauOpsDashboardJobRow],
+) -> String {
+    if let Some(requested_job_id) = controls.requested_job_id() {
+        if jobs_rows.iter().any(|row| row.job_id == requested_job_id) {
+            return requested_job_id;
+        }
+    }
+    jobs_rows
+        .first()
+        .map(|row| row.job_id.clone())
+        .unwrap_or_default()
+}
+
+fn collect_ops_job_detail_output_contracts(
+    selected_job_id: &str,
+    jobs_rows: &[TauOpsDashboardJobRow],
+) -> (String, u64, String, String) {
+    let Some(selected_row) = jobs_rows
+        .iter()
+        .find(|row| row.job_id.as_str() == selected_job_id)
+    else {
+        return (String::new(), 0, String::new(), String::new());
+    };
+
+    let duration_ms = selected_row
+        .finished_unix_ms
+        .saturating_sub(selected_row.started_unix_ms);
+    let (stdout, stderr) = match selected_row.job_status.as_str() {
+        "running" => ("indexing...".to_string(), String::new()),
+        "completed" => ("prune complete".to_string(), String::new()),
+        "failed" => (String::new(), "connector timeout".to_string()),
+        _ => (String::new(), String::new()),
+    };
+    (selected_row.job_status.clone(), duration_ms, stdout, stderr)
+}
+
 fn collect_tau_ops_dashboard_chat_snapshot(
     state: &Arc<GatewayOpenResponsesServerState>,
     controls: &OpsShellControlsQuery,
@@ -725,6 +763,12 @@ fn collect_tau_ops_dashboard_chat_snapshot(
     let tool_detail_recent_invocation_rows =
         collect_ops_tool_detail_recent_invocation_rows(tool_detail_selected_tool_name.as_str());
     let jobs_rows = collect_ops_jobs_rows();
+    let job_detail_selected_job_id = resolve_ops_selected_job_id(controls, jobs_rows.as_slice());
+    let (job_detail_status, job_detail_duration_ms, job_detail_stdout, job_detail_stderr) =
+        collect_ops_job_detail_output_contracts(
+            job_detail_selected_job_id.as_str(),
+            jobs_rows.as_slice(),
+        );
     let memory_scope_filter = MemoryScopeFilter {
         workspace_id: (!memory_search_workspace_id.is_empty())
             .then_some(memory_search_workspace_id.clone()),
@@ -949,6 +993,11 @@ fn collect_tau_ops_dashboard_chat_snapshot(
         tool_detail_usage_histogram_rows,
         tool_detail_recent_invocation_rows,
         jobs_rows,
+        job_detail_selected_job_id,
+        job_detail_status,
+        job_detail_duration_ms,
+        job_detail_stdout,
+        job_detail_stderr,
     }
 }
 

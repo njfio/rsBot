@@ -48,6 +48,8 @@ pub(super) struct OpsShellControlsQuery {
     graph_filter_relation_type: String,
     #[serde(default)]
     tool: String,
+    #[serde(default)]
+    job: String,
 }
 
 impl OpsShellControlsQuery {
@@ -230,6 +232,15 @@ impl OpsShellControlsQuery {
 
     pub(super) fn requested_tool_name(&self) -> Option<String> {
         let value = self.tool.trim();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value.to_string())
+        }
+    }
+
+    pub(super) fn requested_job_id(&self) -> Option<String> {
+        let value = self.job.trim();
         if value.is_empty() {
             None
         } else {
@@ -573,5 +584,17 @@ mod tests {
 
         let empty = OpsShellControlsQuery::default();
         assert_eq!(empty.requested_tool_name(), None);
+    }
+
+    #[test]
+    fn unit_requested_job_id_returns_trimmed_value_or_none() {
+        let controls = OpsShellControlsQuery {
+            job: " job-002 ".to_string(),
+            ..OpsShellControlsQuery::default()
+        };
+        assert_eq!(controls.requested_job_id(), Some("job-002".to_string()));
+
+        let empty = OpsShellControlsQuery::default();
+        assert_eq!(empty.requested_job_id(), None);
     }
 }

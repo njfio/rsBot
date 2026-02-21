@@ -1887,6 +1887,72 @@ fn regression_spec_3116_c04_non_tools_routes_keep_hidden_jobs_markers() {
 }
 
 #[test]
+fn functional_spec_3120_c01_c02_tools_route_renders_job_detail_output_markers() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::ToolsJobs,
+        theme: TauOpsDashboardTheme::Light,
+        sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot {
+            jobs_rows: vec![
+                TauOpsDashboardJobRow {
+                    job_id: "job-001".to_string(),
+                    job_name: "memory-index".to_string(),
+                    job_status: "running".to_string(),
+                    started_unix_ms: 1000,
+                    finished_unix_ms: 0,
+                },
+                TauOpsDashboardJobRow {
+                    job_id: "job-002".to_string(),
+                    job_name: "session-prune".to_string(),
+                    job_status: "completed".to_string(),
+                    started_unix_ms: 900,
+                    finished_unix_ms: 950,
+                },
+            ],
+            job_detail_selected_job_id: "job-002".to_string(),
+            job_detail_status: "completed".to_string(),
+            job_detail_duration_ms: 50,
+            job_detail_stdout: "prune complete".to_string(),
+            job_detail_stderr: String::new(),
+            ..TauOpsDashboardChatSnapshot::default()
+        },
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-job-detail-panel\" data-selected-job-id=\"job-002\" data-detail-visible=\"true\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-job-detail-metadata\" data-job-id=\"job-002\" data-job-status=\"completed\" data-duration-ms=\"50\""
+    ));
+    assert!(html.contains("id=\"tau-ops-job-detail-stdout\" data-output-bytes=\"14\""));
+    assert!(html.contains("prune complete"));
+    assert!(html.contains("id=\"tau-ops-job-detail-stderr\" data-output-bytes=\"0\""));
+}
+
+#[test]
+fn regression_spec_3120_c04_non_tools_routes_keep_hidden_job_detail_markers() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::Chat,
+        theme: TauOpsDashboardTheme::Dark,
+        sidebar_state: TauOpsDashboardSidebarState::Expanded,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot::default(),
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-job-detail-panel\" data-selected-job-id=\"\" data-detail-visible=\"false\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-job-detail-metadata\" data-job-id=\"\" data-job-status=\"\" data-duration-ms=\"0\""
+    ));
+    assert!(html.contains("id=\"tau-ops-job-detail-stdout\" data-output-bytes=\"0\""));
+    assert!(html.contains("id=\"tau-ops-job-detail-stderr\" data-output-bytes=\"0\""));
+}
+
+#[test]
 fn functional_spec_2838_c01_c02_c03_sessions_route_renders_sessions_panel_list_rows_and_links() {
     let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
         auth_mode: TauOpsDashboardAuthMode::Token,

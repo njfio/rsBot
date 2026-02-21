@@ -2936,6 +2936,39 @@ async fn integration_spec_3116_c03_ops_tools_route_renders_jobs_list_contracts()
 }
 
 #[tokio::test]
+async fn integration_spec_3120_c03_ops_tools_route_renders_selected_job_detail_output_contracts() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state_with_fixture_tools(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/tools-jobs?theme=light&sidebar=collapsed&session=ops-job-detail&job=job-002"
+        ))
+        .send()
+        .await
+        .expect("load ops job detail route");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response
+        .text()
+        .await
+        .expect("read ops job detail route body");
+
+    assert!(body.contains(
+        "id=\"tau-ops-job-detail-panel\" data-selected-job-id=\"job-002\" data-detail-visible=\"true\""
+    ));
+    assert!(body.contains(
+        "id=\"tau-ops-job-detail-metadata\" data-job-id=\"job-002\" data-job-status=\"completed\" data-duration-ms=\"50\""
+    ));
+    assert!(body.contains("id=\"tau-ops-job-detail-stdout\" data-output-bytes=\"14\""));
+    assert!(body.contains("prune complete"));
+    assert!(body.contains("id=\"tau-ops-job-detail-stderr\" data-output-bytes=\"0\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2798_c04_ops_shell_exposes_responsive_and_theme_contract_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");
