@@ -73,6 +73,7 @@ mod server_state;
 mod session_api_runtime;
 mod session_runtime;
 mod status_runtime;
+mod stream_response_handler;
 #[cfg(test)]
 mod tests;
 mod tool_registrar;
@@ -179,6 +180,7 @@ use session_runtime::{
     persist_messages, persist_session_usage_delta,
 };
 use status_runtime::handle_gateway_status;
+use stream_response_handler::stream_openresponses;
 pub use tool_registrar::{GatewayToolRegistrar, GatewayToolRegistrarFn, NoopGatewayToolRegistrar};
 use tools_runtime::{handle_gateway_tools_inventory, handle_gateway_tools_stats};
 use training_runtime::{handle_gateway_training_config_patch, handle_gateway_training_rollouts};
@@ -273,55 +275,6 @@ async fn handle_gateway_auth_session(
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(error) => error.into_response(),
     }
-}
-
-async fn stream_openresponses(
-    state: Arc<GatewayOpenResponsesServerState>,
-    request: OpenResponsesRequest,
-) -> Response {
-    let (tx, rx) = mpsc::unbounded_channel::<SseFrame>();
-    tokio::spawn(async move {
-        match execute_openresponses_request(state, request, Some(tx.clone())).await {
-            Ok(result) => {
-                let response = result.response;
-                let _ = tx.send(SseFrame::Json {
-                    event: "response.output_text.done",
-                    payload: json!({
-                        "type": "response.output_text.done",
-                        "response_id": response.id,
-                        "text": response.output_text,
-                    }),
-                });
-                let _ = tx.send(SseFrame::Json {
-                    event: "response.completed",
-                    payload: json!({
-                        "type": "response.completed",
-                        "response": response,
-                    }),
-                });
-                let _ = tx.send(SseFrame::Done);
-            }
-            Err(error) => {
-                let _ = tx.send(SseFrame::Json {
-                    event: "response.failed",
-                    payload: json!({
-                        "type": "response.failed",
-                        "error": {
-                            "code": error.code,
-                            "message": error.message,
-                        }
-                    }),
-                });
-                let _ = tx.send(SseFrame::Done);
-            }
-        }
-    });
-
-    let stream =
-        UnboundedReceiverStream::new(rx).map(|frame| Ok::<Event, Infallible>(frame.into_event()));
-    Sse::new(stream)
-        .keep_alive(KeepAlive::default())
-        .into_response()
 }
 
 async fn execute_openresponses_request(
