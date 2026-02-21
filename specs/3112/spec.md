@@ -1,6 +1,6 @@
 # Spec: Issue #3112 - ops tools detail contracts
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 `/ops/tools-jobs` now lists available tools, but it does not expose deterministic
