@@ -365,6 +365,11 @@ async fn handle_chat_completions(
             .headers_mut()
             .insert(CONTENT_TYPE, content_type.clone());
     }
+    if let Some(request_id) = response_headers.get("x-request-id") {
+        response
+            .headers_mut()
+            .insert(HeaderName::from_static("x-request-id"), request_id.clone());
+    }
     response
 }
 
@@ -512,6 +517,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integration_proxy_returns_upstream_request_id_header() {
+        let upstream = MockServer::start_async().await;
+        let forwarded = upstream.mock(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(200)
+                .header("content-type", "application/json")
+                .header("x-request-id", "upstream-request-123")
+                .body(r#"{"id":"chatcmpl-reqid","object":"chat.completion"}"#);
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let state = Arc::new(
+            TrainingProxyState::from_config(&TrainingProxyConfig {
+                bind: "127.0.0.1:0".to_string(),
+                upstream_base_url: upstream.base_url(),
+                state_dir: temp.path().join(".tau"),
+                request_timeout_ms: 10_000,
+            })
+            .expect("build proxy state"),
+        );
+        let app = build_training_proxy_router(state);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri(OPENAI_CHAT_COMPLETIONS_ENDPOINT)
+            .header("content-type", "application/json")
+            .header(HEADER_ROLLOUT_ID, "rollout-reqid")
+            .header(HEADER_ATTEMPT_ID, "attempt-reqid")
+            .body(Body::from(r#"{"model":"gpt-4o-mini","messages":[]}"#))
+            .expect("request");
+
+        let response = app.oneshot(request).await.expect("proxy response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let request_id = response
+            .headers()
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok());
+        assert_eq!(request_id, Some("upstream-request-123"));
+
+        forwarded.assert();
+    }
+
+    #[tokio::test]
     async fn regression_proxy_rejects_requests_without_required_attribution_headers() {
         let upstream = MockServer::start_async().await;
         let temp = tempdir().expect("tempdir");
@@ -593,5 +641,87 @@ mod tests {
         assert!(attribution_log.contains("\"attempt_id\":\"attempt-err\""));
         assert!(attribution_log.contains("\"status_code\":429"));
         assert!(!attribution_log.contains("\"error_code\""));
+    }
+
+    #[tokio::test]
+    async fn regression_proxy_returns_bad_gateway_and_logs_upstream_transport_failure() {
+        let temp = tempdir().expect("tempdir");
+        let state = Arc::new(
+            TrainingProxyState::from_config(&TrainingProxyConfig {
+                bind: "127.0.0.1:0".to_string(),
+                upstream_base_url: "http://127.0.0.1:9".to_string(),
+                state_dir: temp.path().join(".tau"),
+                request_timeout_ms: 1_000,
+            })
+            .expect("build proxy state"),
+        );
+        let app = build_training_proxy_router(state.clone());
+
+        let request = Request::builder()
+            .method("POST")
+            .uri(OPENAI_CHAT_COMPLETIONS_ENDPOINT)
+            .header("content-type", "application/json")
+            .header(HEADER_ROLLOUT_ID, "rollout-fail")
+            .header(HEADER_ATTEMPT_ID, "attempt-fail")
+            .body(Body::from(r#"{"model":"gpt-4o-mini","messages":[]}"#))
+            .expect("request");
+
+        let response = app.oneshot(request).await.expect("proxy response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&body).expect("parse error body as json");
+        assert_eq!(
+            parsed["error"]["code"],
+            Value::String("training_proxy_upstream_request_failed".to_string())
+        );
+
+        let attribution_log =
+            std::fs::read_to_string(&state.attribution_log_path).expect("read attribution log");
+        assert!(attribution_log.contains("\"rollout_id\":\"rollout-fail\""));
+        assert!(attribution_log.contains("\"attempt_id\":\"attempt-fail\""));
+        assert!(attribution_log.contains("\"error_code\":\"upstream_request_failed\""));
+        assert!(!attribution_log.contains("\"status_code\""));
+    }
+
+    #[tokio::test]
+    async fn integration_proxy_health_endpoint_reports_ready_contract() {
+        let upstream = MockServer::start_async().await;
+        let temp = tempdir().expect("tempdir");
+        let state = Arc::new(
+            TrainingProxyState::from_config(&TrainingProxyConfig {
+                bind: "127.0.0.1:0".to_string(),
+                upstream_base_url: upstream.base_url(),
+                state_dir: temp.path().join(".tau"),
+                request_timeout_ms: 10_000,
+            })
+            .expect("build proxy state"),
+        );
+        let app = build_training_proxy_router(state.clone());
+
+        let request = Request::builder()
+            .method("GET")
+            .uri(TRAINING_PROXY_HEALTH_ENDPOINT)
+            .body(Body::empty())
+            .expect("request");
+
+        let response = app.oneshot(request).await.expect("proxy response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read response body");
+        let parsed: serde_json::Value = serde_json::from_slice(&body).expect("health json");
+        assert_eq!(parsed["schema_version"], PROXY_SCHEMA_VERSION);
+        assert_eq!(parsed["status"], "ready");
+        assert_eq!(
+            parsed["upstream_chat_completions_url"],
+            format!("{}/v1/chat/completions", upstream.base_url())
+        );
+        assert_eq!(
+            parsed["attribution_log_path"],
+            Value::String(state.attribution_log_path.display().to_string())
+        );
     }
 }
