@@ -44,6 +44,7 @@ use crate::remote_profile::GatewayOpenResponsesAuthMode;
 
 mod audit_runtime;
 mod auth_runtime;
+mod auth_session_handler;
 mod channel_telemetry_runtime;
 mod compat_state_runtime;
 mod config_runtime;
@@ -89,6 +90,7 @@ use auth_runtime::{
     authorize_gateway_request, collect_gateway_auth_status_report, enforce_gateway_rate_limit,
     issue_gateway_session_token, GatewayAuthRuntimeState,
 };
+use auth_session_handler::handle_gateway_auth_session;
 use channel_telemetry_runtime::{
     handle_gateway_channel_lifecycle_action, handle_gateway_ui_telemetry,
 };
@@ -242,37 +244,6 @@ async fn handle_openresponses(
 
     match execute_openresponses_request(state, request, None).await {
         Ok(result) => (StatusCode::OK, Json(result.response)).into_response(),
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn handle_gateway_auth_session(
-    State(state): State<Arc<GatewayOpenResponsesServerState>>,
-    body: Bytes,
-) -> Response {
-    if state.config.auth_mode != GatewayOpenResponsesAuthMode::PasswordSession {
-        return OpenResponsesApiError::bad_request(
-            "auth_mode_mismatch",
-            "gateway auth session endpoint requires --gateway-openresponses-auth-mode=password-session",
-        )
-        .into_response();
-    }
-    if let Err(error) = enforce_gateway_rate_limit(&state, "auth_session_issue") {
-        return error.into_response();
-    }
-    let request = match serde_json::from_slice::<GatewayAuthSessionRequest>(&body) {
-        Ok(request) => request,
-        Err(error) => {
-            return OpenResponsesApiError::bad_request(
-                "malformed_json",
-                format!("failed to parse request body: {error}"),
-            )
-            .into_response();
-        }
-    };
-
-    match issue_gateway_session_token(&state, request.password.as_str()) {
-        Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(error) => error.into_response(),
     }
 }
