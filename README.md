@@ -1,9 +1,22 @@
 # Tau
 
-Tau is a pure-Rust agent runtime and operator control plane.
+## What Tau Is
+
+Tau is a pure-Rust agent runtime and operator control plane for running model-driven workflows,
+multi-channel automations, and gateway-managed sessions with deterministic operational controls.
 
 The workspace includes core agent execution, multi-provider model access, transport bridges,
 gateway APIs, deterministic demo/contract workflows, and prompt-optimization training support.
+
+## Current Operator Surfaces
+
+Operator deployment guide: `docs/guides/operator-deployment-guide.md`
+
+Gateway API reference (70+ routes): `docs/guides/gateway-api-reference.md`
+
+Spec/branch archive workflow: `docs/guides/spec-branch-archive-ops.md`
+
+## Training Boundary Status
 
 Training boundary status:
 - Canonical CLI training mode today is prompt optimization (`--prompt-optimization-*`).
@@ -17,7 +30,7 @@ Training boundary status:
 - Staged architecture/phase reference is documented in
   [`docs/planning/true-rl-roadmap-skeleton.md`](docs/planning/true-rl-roadmap-skeleton.md).
 
-## What Tau Includes Today
+## What Tau Does Today
 
 - Rust-first runtime architecture (no Node.js/TypeScript runtime dependency in core paths)
 - Provider-aware model routing (`openai/*`, `openrouter/*`, `anthropic/*`, `google/*`) with OpenAI-compatible alias support (`deepseek/*`, `groq/*`, `xai/*`, `mistral/*`, `azure/*`) and multiple auth modes
