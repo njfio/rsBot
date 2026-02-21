@@ -1,30 +1,31 @@
 # Security Policy
 
-## Reporting a Vulnerability
+## Supported Versions
 
-Please do not open public issues for potential security vulnerabilities.
+Security fixes are prioritized for the current `master` branch and the most recent release artifacts produced from it.
 
-Use one of these channels:
+## Reporting Channels
 
-1. GitHub Security Advisory (preferred): open a private advisory in this repository.
-2. If advisory workflow is unavailable, open a private maintainer contact request and include repro details, affected versions/commit, and impact.
+Do not open public GitHub issues for suspected vulnerabilities.
 
-Include:
+Use one of the following private channels:
 
-- Vulnerability description and impact.
-- Reproduction steps or proof-of-concept.
-- Suspected affected components/crates.
-- Suggested mitigation (if known).
+1. GitHub Security Advisories (preferred): open a private advisory in this repository.
+2. Maintainer private contact path (fallback): if advisory flow is unavailable, request private maintainer contact and include full details.
 
-## Response Expectations
+Include the following in your report:
 
-Initial triage target: within 3 business days.
+- Vulnerability description and impact
+- Reproduction steps or proof-of-concept
+- Suspected affected components/crates
+- Commit/version context
+- Suggested mitigation (if known)
 
-After triage, maintainers will:
+## Triage and Response SLA
 
-- Confirm severity and scope.
-- Share remediation plan and expected fix window.
-- Coordinate validation for the fix before disclosure.
+- Initial triage target: within 3 business days.
+- Severity and scope confirmation follows triage.
+- Maintainers provide remediation plan and expected fix window after confirmation.
 
 ## Coordinated Disclosure
 
@@ -32,6 +33,6 @@ Please allow time for a patch before public disclosure.
 
 When a fix is ready:
 
-- A patch PR/release will be prepared.
-- Advisories/changelog notes will describe impacted versions and upgrade path.
-- Credit will be provided when requested.
+- Patch PR/release is prepared.
+- Advisory/changelog notes describe affected versions and upgrade path.
+- Reporter credit is provided on request.

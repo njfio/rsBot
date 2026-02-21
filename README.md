@@ -16,6 +16,10 @@ Gateway API reference (70+ routes): `docs/guides/gateway-api-reference.md`
 
 Spec/branch archive workflow: `docs/guides/spec-branch-archive-ops.md`
 
+Contributor guide: `CONTRIBUTING.md`
+
+Security policy: `SECURITY.md`
+
 ## Training Boundary Status
 
 Training boundary status:
