@@ -1185,6 +1185,46 @@ fn regression_spec_3060_c04_non_memory_routes_keep_hidden_memory_delete_markers(
 }
 
 #[test]
+fn functional_spec_3064_c01_memory_route_renders_detail_panel_default_markers() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::Memory,
+        theme: TauOpsDashboardTheme::Light,
+        sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot::default(),
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-memory-detail-panel\" data-detail-visible=\"false\" data-memory-id=\"\" data-memory-type=\"\" data-embedding-source=\"\" data-embedding-model=\"\" data-embedding-reason-code=\"\" data-embedding-dimensions=\"0\" data-relation-count=\"0\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-memory-detail-embedding\" data-embedding-source=\"\" data-embedding-model=\"\" data-embedding-reason-code=\"\" data-embedding-dimensions=\"0\""
+    ));
+    assert!(html.contains("id=\"tau-ops-memory-relations\" data-relation-count=\"0\""));
+    assert!(html.contains("id=\"tau-ops-memory-relations-empty-state\" data-empty-state=\"true\""));
+}
+
+#[test]
+fn regression_spec_3064_c04_non_memory_routes_keep_hidden_detail_panel_markers() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::Chat,
+        theme: TauOpsDashboardTheme::Light,
+        sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot::default(),
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-memory-panel\" data-route=\"/ops/memory\" aria-hidden=\"true\" data-panel-visible=\"false\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-memory-detail-panel\" data-detail-visible=\"false\" data-memory-id=\"\""
+    ));
+}
+
+#[test]
 fn functional_spec_2838_c01_c02_c03_sessions_route_renders_sessions_panel_list_rows_and_links() {
     let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
         auth_mode: TauOpsDashboardAuthMode::Token,

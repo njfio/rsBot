@@ -9,8 +9,8 @@ use tau_ai::{Message, MessageRole};
 use tau_dashboard_ui::{
     render_tau_ops_dashboard_shell_with_context, TauOpsDashboardAuthMode,
     TauOpsDashboardChatMessageRow, TauOpsDashboardChatSessionOptionRow,
-    TauOpsDashboardChatSnapshot, TauOpsDashboardMemorySearchRow, TauOpsDashboardRoute,
-    TauOpsDashboardSessionGraphEdgeRow, TauOpsDashboardSessionGraphNodeRow,
+    TauOpsDashboardChatSnapshot, TauOpsDashboardMemoryRelationRow, TauOpsDashboardMemorySearchRow,
+    TauOpsDashboardRoute, TauOpsDashboardSessionGraphEdgeRow, TauOpsDashboardSessionGraphNodeRow,
     TauOpsDashboardSessionTimelineRow, TauOpsDashboardShellContext, TauOpsDashboardSidebarState,
     TauOpsDashboardTheme,
 };
@@ -553,6 +553,18 @@ fn collect_tau_ops_dashboard_chat_snapshot(
         .requested_memory_deleted_entry_id()
         .unwrap_or_default();
     let mut memory_search_rows = Vec::new();
+    let mut memory_detail_visible = false;
+    let mut memory_detail_selected_entry_id = controls
+        .requested_memory_detail_entry_id()
+        .unwrap_or_default();
+    let mut memory_detail_summary = String::new();
+    let mut memory_detail_memory_type = String::new();
+    let mut memory_detail_embedding_source = String::new();
+    let mut memory_detail_embedding_model = String::new();
+    let mut memory_detail_embedding_reason_code = String::new();
+    let mut memory_detail_embedding_dimensions = 0usize;
+    let mut memory_detail_relation_rows = Vec::new();
+    let store = gateway_memory_store(&state.config.state_dir, active_session_key.as_str());
 
     if !memory_search_query.trim().is_empty() {
         let search_options = MemorySearchOptions {
@@ -567,7 +579,6 @@ fn collect_tau_ops_dashboard_chat_snapshot(
             },
             ..MemorySearchOptions::default()
         };
-        let store = gateway_memory_store(&state.config.state_dir, active_session_key.as_str());
         if let Ok(search_result) = store.search(memory_search_query.as_str(), &search_options) {
             memory_search_rows = search_result
                 .matches
@@ -584,6 +595,32 @@ fn collect_tau_ops_dashboard_chat_snapshot(
                 })
                 .take(search_options.limit)
                 .collect();
+        }
+    }
+
+    if !memory_detail_selected_entry_id.trim().is_empty() {
+        match store.read_entry(memory_detail_selected_entry_id.as_str(), None) {
+            Ok(Some(record)) => {
+                memory_detail_visible = true;
+                memory_detail_summary = record.entry.summary.clone();
+                memory_detail_memory_type = record.memory_type.as_str().to_string();
+                memory_detail_embedding_source = record.embedding_source.clone();
+                memory_detail_embedding_model = record.embedding_model.clone().unwrap_or_default();
+                memory_detail_embedding_reason_code = record.embedding_reason_code.clone();
+                memory_detail_embedding_dimensions = record.embedding_vector.len();
+                memory_detail_relation_rows = record
+                    .relations
+                    .iter()
+                    .map(|relation| TauOpsDashboardMemoryRelationRow {
+                        target_id: relation.target_id.clone(),
+                        relation_type: relation.relation_type.as_str().to_string(),
+                        effective_weight: format!("{:.4}", relation.effective_weight),
+                    })
+                    .collect();
+            }
+            Ok(None) | Err(_) => {
+                memory_detail_selected_entry_id.clear();
+            }
         }
     }
 
@@ -681,6 +718,15 @@ fn collect_tau_ops_dashboard_chat_snapshot(
         memory_create_relation_weight: String::new(),
         memory_delete_status,
         memory_delete_deleted_entry_id,
+        memory_detail_visible,
+        memory_detail_selected_entry_id,
+        memory_detail_summary,
+        memory_detail_memory_type,
+        memory_detail_embedding_source,
+        memory_detail_embedding_model,
+        memory_detail_embedding_reason_code,
+        memory_detail_embedding_dimensions,
+        memory_detail_relation_rows,
     }
 }
 

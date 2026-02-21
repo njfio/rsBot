@@ -2083,6 +2083,113 @@ async fn regression_spec_3060_ops_memory_delete_requires_existing_entry_id() {
 }
 
 #[tokio::test]
+async fn integration_spec_3064_c02_c03_ops_memory_detail_panel_renders_embedding_and_relation_markers_for_selected_entry(
+) {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let session_key = "ops-memory-detail";
+    let relation_target_endpoint = expand_memory_entry_template(
+        GATEWAY_MEMORY_ENTRY_ENDPOINT,
+        session_key,
+        "mem-detail-relation-target",
+    );
+    let relation_target_create = client
+        .put(format!("http://{addr}{relation_target_endpoint}"))
+        .bearer_auth("secret")
+        .json(&json!({
+            "summary": "DetailToken relation target",
+            "workspace_id": "workspace-detail",
+            "channel_id": "channel-detail",
+            "actor_id": "operator",
+            "memory_type": "fact",
+            "policy_gate": MEMORY_WRITE_POLICY_GATE
+        }))
+        .send()
+        .await
+        .expect("create relation target entry");
+    assert_eq!(relation_target_create.status(), StatusCode::CREATED);
+
+    let detail_target_create = client
+        .post(format!("http://{addr}/ops/memory"))
+        .form(&[
+            ("theme", "light"),
+            ("sidebar", "collapsed"),
+            ("session", session_key),
+            ("operation", "create"),
+            ("entry_id", "mem-detail-target"),
+            ("summary", "DetailToken primary entry"),
+            ("workspace_id", "workspace-detail"),
+            ("channel_id", "channel-detail"),
+            ("actor_id", "operator"),
+            ("memory_type", "goal"),
+            ("relation_target_id", "mem-detail-relation-target"),
+            ("relation_type", "supports"),
+            ("relation_weight", "0.66"),
+        ])
+        .send()
+        .await
+        .expect("create detail target entry");
+    assert_eq!(detail_target_create.status(), StatusCode::OK);
+
+    let detail_response = client
+        .get(format!(
+            "http://{addr}/ops/memory?theme=light&sidebar=collapsed&session={session_key}&query=DetailToken&workspace_id=workspace-detail&channel_id=channel-detail&actor_id=operator&memory_type=goal&detail_memory_id=mem-detail-target"
+        ))
+        .send()
+        .await
+        .expect("load ops memory detail route");
+    assert_eq!(detail_response.status(), StatusCode::OK);
+    let detail_body = detail_response
+        .text()
+        .await
+        .expect("read ops memory detail body");
+
+    assert!(detail_body.contains(
+        "id=\"tau-ops-memory-detail-panel\" data-detail-visible=\"true\" data-memory-id=\"mem-detail-target\" data-memory-type=\"goal\""
+    ));
+    assert!(detail_body
+        .contains("id=\"tau-ops-memory-detail-embedding\" data-embedding-source=\"hash-fnv1a\""));
+    assert!(detail_body.contains("data-embedding-reason-code=\"memory_embedding_hash_only\""));
+    assert!(detail_body.contains("id=\"tau-ops-memory-relations\" data-relation-count=\"1\""));
+    assert!(detail_body.contains(
+        "id=\"tau-ops-memory-relation-row-0\" data-target-id=\"mem-detail-relation-target\" data-relation-type=\"related_to\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn regression_spec_3064_ops_memory_detail_panel_hides_when_selected_entry_missing() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let detail_response = client
+        .get(format!(
+            "http://{addr}/ops/memory?theme=light&sidebar=collapsed&session=ops-memory-detail-missing&detail_memory_id=missing-entry"
+        ))
+        .send()
+        .await
+        .expect("load ops memory detail route with missing selection");
+    assert_eq!(detail_response.status(), StatusCode::OK);
+    let detail_body = detail_response
+        .text()
+        .await
+        .expect("read ops memory detail missing-selection body");
+
+    assert!(detail_body.contains(
+        "id=\"tau-ops-memory-detail-panel\" data-detail-visible=\"false\" data-memory-id=\"\""
+    ));
+    assert!(detail_body.contains("id=\"tau-ops-memory-relations\" data-relation-count=\"0\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2798_c04_ops_shell_exposes_responsive_and_theme_contract_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");
