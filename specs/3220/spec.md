@@ -1,6 +1,6 @@
 # Spec: Issue #3220 - move gateway compat/telemetry runtime state into module
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 `gateway_openresponses.rs` still owns compat/telemetry runtime-state structs and mutation/reporting methods inline. This keeps the root module larger than needed and mixes runtime-state concerns with routing composition.
