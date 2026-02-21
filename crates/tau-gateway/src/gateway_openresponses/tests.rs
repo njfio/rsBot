@@ -708,6 +708,16 @@ fn unit_gateway_openresponses_server_state_generates_prefixed_unique_ids() {
 }
 
 #[test]
+fn unit_gateway_openresponses_server_state_resolves_configured_system_prompt() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+
+    let resolved = state.resolved_system_prompt();
+    assert!(!resolved.is_empty());
+    assert!(resolved.contains("You are Tau."));
+}
+
+#[test]
 fn unit_translate_openresponses_request_supports_item_input_and_function_call_output() {
     let request = OpenResponsesRequest {
         model: None,
