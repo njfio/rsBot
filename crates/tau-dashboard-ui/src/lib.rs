@@ -336,6 +336,16 @@ pub struct TauOpsDashboardToolInvocationRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TauOpsDashboardJobRow` in `tau-dashboard-ui`.
+pub struct TauOpsDashboardJobRow {
+    pub job_id: String,
+    pub job_name: String,
+    pub job_status: String,
+    pub started_unix_ms: u64,
+    pub finished_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Public struct `TauOpsDashboardChatSnapshot` in `tau-dashboard-ui`.
 pub struct TauOpsDashboardChatSnapshot {
     pub active_session_key: String,
@@ -411,6 +421,7 @@ pub struct TauOpsDashboardChatSnapshot {
     pub tool_detail_policy_sandbox_mode: String,
     pub tool_detail_usage_histogram_rows: Vec<TauOpsDashboardToolUsageHistogramRow>,
     pub tool_detail_recent_invocation_rows: Vec<TauOpsDashboardToolInvocationRow>,
+    pub jobs_rows: Vec<TauOpsDashboardJobRow>,
 }
 
 impl Default for TauOpsDashboardChatSnapshot {
@@ -496,6 +507,7 @@ impl Default for TauOpsDashboardChatSnapshot {
             tool_detail_policy_sandbox_mode: "default".to_string(),
             tool_detail_usage_histogram_rows: vec![],
             tool_detail_recent_invocation_rows: vec![],
+            jobs_rows: vec![],
         }
     }
 }
@@ -1301,6 +1313,7 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     let tools_total_count_summary_attr = tools_total_count_value.clone();
     let tools_row_count_table_attr = tools_total_count_value.clone();
     let tools_row_count_body_attr = tools_total_count_value;
+    let tools_jobs_route_active = matches!(context.active_route, TauOpsDashboardRoute::ToolsJobs);
     let tools_inventory_rows_view = if tools_inventory_rows.is_empty() {
         leptos::either::Either::Left(view! {
             <tr id="tau-ops-tools-inventory-empty-state" data-empty-state="true">
@@ -1353,13 +1366,12 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                 .unwrap_or_default()
         }
     };
-    let tool_detail_visible = if matches!(context.active_route, TauOpsDashboardRoute::ToolsJobs)
-        && !tool_detail_selected_tool_name.is_empty()
-    {
-        "true"
-    } else {
-        "false"
-    };
+    let tool_detail_visible =
+        if tools_jobs_route_active && !tool_detail_selected_tool_name.is_empty() {
+            "true"
+        } else {
+            "false"
+        };
     let tool_detail_description = if context.chat.tool_detail_description.trim().is_empty() {
         "No tool selected.".to_string()
     } else {
@@ -1438,6 +1450,72 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                             <td>{row.result_summary.clone()}</td>
                             <td>{duration_ms}</td>
                             <td>{row.status.clone()}</td>
+                        </tr>
+                    }
+                })
+                .collect_view(),
+        )
+    };
+    let jobs_rows = if tools_jobs_route_active {
+        context.chat.jobs_rows.clone()
+    } else {
+        Vec::new()
+    };
+    let jobs_total_count_value = jobs_rows.len().to_string();
+    let jobs_total_count_panel_attr = jobs_total_count_value.clone();
+    let jobs_row_count_table_attr = jobs_total_count_value.clone();
+    let jobs_row_count_body_attr = jobs_total_count_value;
+    let jobs_running_count = jobs_rows
+        .iter()
+        .filter(|row| row.job_status.as_str() == "running")
+        .count()
+        .to_string();
+    let jobs_completed_count = jobs_rows
+        .iter()
+        .filter(|row| row.job_status.as_str() == "completed")
+        .count()
+        .to_string();
+    let jobs_failed_count = jobs_rows
+        .iter()
+        .filter(|row| row.job_status.as_str() == "failed")
+        .count()
+        .to_string();
+    let jobs_panel_visible = if tools_jobs_route_active {
+        "true"
+    } else {
+        "false"
+    };
+    let jobs_rows_view = if jobs_rows.is_empty() {
+        leptos::either::Either::Left(view! {
+            <tr id="tau-ops-jobs-empty-state" data-empty-state="true">
+                <td colspan="5">No jobs recorded.</td>
+            </tr>
+        })
+    } else {
+        leptos::either::Either::Right(
+            jobs_rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| {
+                    let row_id = format!("tau-ops-jobs-row-{index}");
+                    let started_unix_ms = row.started_unix_ms.to_string();
+                    let finished_unix_ms = row.finished_unix_ms.to_string();
+                    let started_unix_ms_attr = started_unix_ms.clone();
+                    let finished_unix_ms_attr = finished_unix_ms.clone();
+                    view! {
+                        <tr
+                            id=row_id
+                            data-job-id=row.job_id.clone()
+                            data-job-name=row.job_name.clone()
+                            data-job-status=row.job_status.clone()
+                            data-started-unix-ms=started_unix_ms_attr
+                            data-finished-unix-ms=finished_unix_ms_attr
+                        >
+                            <td>{row.job_id.clone()}</td>
+                            <td>{row.job_name.clone()}</td>
+                            <td>{row.job_status.clone()}</td>
+                            <td>{started_unix_ms}</td>
+                            <td>{finished_unix_ms}</td>
                         </tr>
                     }
                 })
@@ -2861,6 +2939,35 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                         <tbody>{tool_detail_invocations_view}</tbody>
                                     </table>
                                 </section>
+                            </section>
+                            <section
+                                id="tau-ops-jobs-panel"
+                                data-panel-visible=jobs_panel_visible
+                                data-total-jobs=jobs_total_count_panel_attr
+                            >
+                                <h3>Jobs</h3>
+                                <p
+                                    id="tau-ops-jobs-summary"
+                                    data-running-count=jobs_running_count
+                                    data-completed-count=jobs_completed_count
+                                    data-failed-count=jobs_failed_count
+                                >
+                                    Running/completed/failed job counts.
+                                </p>
+                                <table id="tau-ops-jobs-table" data-row-count=jobs_row_count_table_attr>
+                                    <thead>
+                                        <tr>
+                                            <th scope="col">Job ID</th>
+                                            <th scope="col">Job Name</th>
+                                            <th scope="col">Status</th>
+                                            <th scope="col">Started (unix ms)</th>
+                                            <th scope="col">Finished (unix ms)</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="tau-ops-jobs-body" data-row-count=jobs_row_count_body_attr>
+                                        {jobs_rows_view}
+                                    </tbody>
+                                </table>
                             </section>
                         </section>
                         <section

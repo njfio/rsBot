@@ -10,7 +10,7 @@ use tau_ai::{Message, MessageRole};
 use tau_dashboard_ui::{
     render_tau_ops_dashboard_shell_with_context, TauOpsDashboardAuthMode,
     TauOpsDashboardChatMessageRow, TauOpsDashboardChatSessionOptionRow,
-    TauOpsDashboardChatSnapshot, TauOpsDashboardMemoryGraphEdgeRow,
+    TauOpsDashboardChatSnapshot, TauOpsDashboardJobRow, TauOpsDashboardMemoryGraphEdgeRow,
     TauOpsDashboardMemoryGraphNodeRow, TauOpsDashboardMemoryRelationRow,
     TauOpsDashboardMemorySearchRow, TauOpsDashboardRoute, TauOpsDashboardSessionGraphEdgeRow,
     TauOpsDashboardSessionGraphNodeRow, TauOpsDashboardSessionTimelineRow,
@@ -620,6 +620,32 @@ fn collect_ops_tool_detail_recent_invocation_rows(
     }]
 }
 
+fn collect_ops_jobs_rows() -> Vec<TauOpsDashboardJobRow> {
+    vec![
+        TauOpsDashboardJobRow {
+            job_id: "job-001".to_string(),
+            job_name: "memory-index".to_string(),
+            job_status: "running".to_string(),
+            started_unix_ms: 1000,
+            finished_unix_ms: 0,
+        },
+        TauOpsDashboardJobRow {
+            job_id: "job-002".to_string(),
+            job_name: "session-prune".to_string(),
+            job_status: "completed".to_string(),
+            started_unix_ms: 900,
+            finished_unix_ms: 950,
+        },
+        TauOpsDashboardJobRow {
+            job_id: "job-003".to_string(),
+            job_name: "connector-retry".to_string(),
+            job_status: "failed".to_string(),
+            started_unix_ms: 800,
+            finished_unix_ms: 820,
+        },
+    ]
+}
+
 fn collect_tau_ops_dashboard_chat_snapshot(
     state: &Arc<GatewayOpenResponsesServerState>,
     controls: &OpsShellControlsQuery,
@@ -698,6 +724,7 @@ fn collect_tau_ops_dashboard_chat_snapshot(
     );
     let tool_detail_recent_invocation_rows =
         collect_ops_tool_detail_recent_invocation_rows(tool_detail_selected_tool_name.as_str());
+    let jobs_rows = collect_ops_jobs_rows();
     let memory_scope_filter = MemoryScopeFilter {
         workspace_id: (!memory_search_workspace_id.is_empty())
             .then_some(memory_search_workspace_id.clone()),
@@ -921,6 +948,7 @@ fn collect_tau_ops_dashboard_chat_snapshot(
         tool_detail_policy_sandbox_mode,
         tool_detail_usage_histogram_rows,
         tool_detail_recent_invocation_rows,
+        jobs_rows,
     }
 }
 
