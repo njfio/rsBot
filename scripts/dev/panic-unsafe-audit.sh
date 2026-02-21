@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 OUTPUT_JSON="${REPO_ROOT}/.tau/reports/quality/panic-unsafe-audit.json"
 QUIET_MODE="false"
+declare -A TEST_CONTEXT_CACHE=()
 
 usage() {
   cat <<'USAGE'
@@ -48,6 +49,133 @@ is_test_path() {
   return 1
 }
 
+test_context_bucket_for_line() {
+  local file="$1"
+  local line_number="$2"
+  local absolute_path="${REPO_ROOT}/${file}"
+  local cache_key="${absolute_path}:${line_number}"
+
+  if [[ -n "${TEST_CONTEXT_CACHE[${cache_key}]+x}" ]]; then
+    printf '%s' "${TEST_CONTEXT_CACHE[${cache_key}]}"
+    return
+  fi
+
+  if [[ ! -f "${absolute_path}" ]]; then
+    TEST_CONTEXT_CACHE["${cache_key}"]="none"
+    printf 'none'
+    return
+  fi
+
+  local result
+  result="$(
+    awk -v target_line="${line_number}" '
+      function has_cfg_test_attribute(text) {
+        return text ~ /#\[cfg\([^]]*test[^]]*\)\]/
+      }
+
+      function has_inline_test_attribute(text) {
+        return text ~ /#\[(tokio::)?test[^]]*\]/ || text ~ /#\[rstest[^]]*\]/
+      }
+
+      BEGIN {
+        depth = 0
+        pending_cfg_test = 0
+        pending_inline_test = 0
+        line_bucket = "none"
+      }
+
+      {
+        line = $0
+
+        if (line !~ /#\[cfg_attr\(/ && has_cfg_test_attribute(line)) {
+          pending_cfg_test = 1
+        }
+        if (line !~ /#\[cfg_attr\(/ && has_inline_test_attribute(line)) {
+          pending_inline_test = 1
+        }
+
+        current_cfg = 0
+        current_inline = 0
+        for (d = 1; d <= depth; d++) {
+          if (cfg_depth[d] == 1) {
+            current_cfg = 1
+          }
+          if (inline_depth[d] == 1) {
+            current_inline = 1
+          }
+        }
+
+        if (NR == target_line) {
+          if (current_cfg == 1) {
+            line_bucket = "cfg_test_module"
+          } else if (current_inline == 1) {
+            line_bucket = "inline_test"
+          } else {
+            line_bucket = "none"
+          }
+        }
+
+        for (i = 1; i <= length(line); i++) {
+          ch = substr(line, i, 1)
+          if (ch == "{") {
+            depth += 1
+            parent_cfg = (depth > 1 ? cfg_depth[depth - 1] : 0)
+            parent_inline = (depth > 1 ? inline_depth[depth - 1] : 0)
+
+            cfg_depth[depth] = (pending_cfg_test == 1 || parent_cfg == 1) ? 1 : 0
+            inline_depth[depth] = (pending_inline_test == 1 || parent_inline == 1) ? 1 : 0
+
+            if (pending_cfg_test == 1) {
+              pending_cfg_test = 0
+            }
+            if (pending_inline_test == 1) {
+              pending_inline_test = 0
+            }
+          } else if (ch == "}") {
+            if (depth > 0) {
+              delete cfg_depth[depth]
+              delete inline_depth[depth]
+              depth -= 1
+            }
+          }
+        }
+
+        if (pending_cfg_test == 1 && line ~ /;[[:space:]]*$/) {
+          pending_cfg_test = 0
+        }
+        if (pending_inline_test == 1 && line ~ /;[[:space:]]*$/) {
+          pending_inline_test = 0
+        }
+
+        if (NR == target_line && line_bucket == "none" && line ~ /panic!\(|unsafe[[:space:]]*\{|unsafe[[:space:]]+fn|unsafe[[:space:]]+impl|unsafe[[:space:]]+trait|unsafe[[:space:]]+extern/) {
+          post_cfg = 0
+          post_inline = 0
+          for (d = 1; d <= depth; d++) {
+            if (cfg_depth[d] == 1) {
+              post_cfg = 1
+            }
+            if (inline_depth[d] == 1) {
+              post_inline = 1
+            }
+          }
+          if (post_cfg == 1) {
+            line_bucket = "cfg_test_module"
+          } else if (post_inline == 1) {
+            line_bucket = "inline_test"
+          }
+        }
+      }
+
+      END {
+        print line_bucket
+      }
+    ' "${absolute_path}"
+  )"
+
+  TEST_CONTEXT_CACHE["${cache_key}"]="${result}"
+  printf '%s' "${result}"
+}
+
 classify_occurrence() {
   local file="$1"
   local line="$2"
@@ -57,19 +185,10 @@ classify_occurrence() {
     return 0
   fi
 
-  local cfg_line=""
-  cfg_line="$(rg -n '^\s*#\s*\[cfg\(test\)\]' "${REPO_ROOT}/${file}" 2>/dev/null | head -n1 | cut -d: -f1 || true)"
-  if [[ -n "${cfg_line}" ]] && [[ "${cfg_line}" =~ ^[0-9]+$ ]] && (( line >= cfg_line )); then
-    printf 'cfg_test_module'
-    return 0
-  fi
-
-  local start_line=1
-  if (( line > 120 )); then
-    start_line=$((line - 120))
-  fi
-  if sed -n "${start_line},${line}p" "${REPO_ROOT}/${file}" | rg -q '#\s*\[(tokio::)?test\b|#\s*\[rstest\b'; then
-    printf 'inline_test'
+  local test_bucket
+  test_bucket="$(test_context_bucket_for_line "${file}" "${line}")"
+  if [[ "${test_bucket}" != "none" ]]; then
+    printf '%s' "${test_bucket}"
     return 0
   fi
 
