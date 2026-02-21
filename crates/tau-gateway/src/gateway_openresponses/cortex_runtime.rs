@@ -23,9 +23,10 @@ use tau_memory::runtime::FileMemoryStore;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
+use super::channel_telemetry_runtime::append_jsonl_record;
 use super::{
-    append_jsonl_record, authorize_dashboard_request, parse_gateway_json_body,
-    GatewayOpenResponsesServerState, OpenResponsesApiError, SseFrame,
+    authorize_dashboard_request, parse_gateway_json_body, GatewayOpenResponsesServerState,
+    OpenResponsesApiError, SseFrame,
 };
 
 const CORTEX_OBSERVER_EVENTS_FILE: &str = "cortex-observer-events.jsonl";

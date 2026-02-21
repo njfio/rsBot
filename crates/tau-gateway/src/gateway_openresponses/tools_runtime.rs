@@ -16,10 +16,8 @@ use serde_json::{json, Value};
 use tau_agent_core::{Agent, AgentConfig};
 use tau_core::current_unix_timestamp_ms;
 
-use super::{
-    authorize_dashboard_request, gateway_ui_telemetry_path, GatewayOpenResponsesServerState,
-    OpenResponsesApiError,
-};
+use super::channel_telemetry_runtime::gateway_ui_telemetry_path;
+use super::{authorize_dashboard_request, GatewayOpenResponsesServerState, OpenResponsesApiError};
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 struct GatewayToolInventoryItem {

@@ -14,8 +14,9 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use super::authorize_and_enforce_gateway_limits;
+use super::channel_telemetry_runtime::gateway_ui_telemetry_path;
 use super::dashboard_status::GatewayDashboardActionAuditRecord;
-use super::{authorize_and_enforce_gateway_limits, gateway_ui_telemetry_path};
 use super::{GatewayOpenResponsesServerState, OpenResponsesApiError};
 
 const AUDIT_SOURCE_DASHBOARD_ACTION: &str = "dashboard_action";
