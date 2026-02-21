@@ -32,6 +32,10 @@ mod tests {
         panic!("test panic");
     }
 }
+
+pub fn trailing_prod_panic() {
+    panic!("trailing prod panic");
+}
 RS
 
 cat > "${tmp_dir}/crates/example/tests/integration.rs" <<'RS'
@@ -52,8 +56,8 @@ panic_cfg_test_module="$(jq -r '.counters.panic_cfg_test_module' "${output_json}
 unsafe_total="$(jq -r '.counters.unsafe_total' "${output_json}")"
 unsafe_path_test="$(jq -r '.counters.unsafe_path_test' "${output_json}")"
 
-assert_equals "2" "${panic_total}" "panic total"
-assert_equals "1" "${panic_review_required}" "panic review required"
+assert_equals "3" "${panic_total}" "panic total"
+assert_equals "2" "${panic_review_required}" "panic review required"
 assert_equals "1" "${panic_cfg_test_module}" "panic cfg-test bucket"
 assert_equals "1" "${unsafe_total}" "unsafe total"
 assert_equals "1" "${unsafe_path_test}" "unsafe path-test bucket"
