@@ -248,7 +248,7 @@ pub fn summarize_audit_file(path: &Path) -> Result<AuditSummary> {
             let total_tokens = usage
                 .get("total_tokens")
                 .and_then(Value::as_u64)
-                .unwrap_or(0);
+                .unwrap_or_else(|| input_tokens.saturating_add(output_tokens));
 
             let aggregate = summary.providers.entry(provider).or_default();
             aggregate.count = aggregate.count.saturating_add(1);
@@ -1958,6 +1958,64 @@ mod tests {
             .expect("provider aggregate");
         assert_eq!(provider.count, 1);
         assert_eq!(provider.total_tokens, 10);
+    }
+
+    #[test]
+    fn spec_c01_summarize_audit_file_falls_back_total_tokens_when_missing() {
+        let (_temp, path) = write_audit_fixture(&[serde_json::json!({
+            "record_type": PROMPT_TELEMETRY_RECORD_TYPE_V1,
+            "schema_version": PROMPT_TELEMETRY_SCHEMA_VERSION,
+            "provider": "openai",
+            "status": "completed",
+            "success": true,
+            "duration_ms": 9,
+            "token_usage": {
+                "input_tokens": 3,
+                "output_tokens": 4
+            }
+        })]);
+
+        let summary = summarize_audit_file(&path).expect("summarize");
+        let provider = summary.providers.get("openai").expect("provider aggregate");
+        assert_eq!(provider.input_tokens, 3);
+        assert_eq!(provider.output_tokens, 4);
+        assert_eq!(provider.total_tokens, 7);
+    }
+
+    #[test]
+    fn spec_c02_summarize_audit_file_mixed_total_token_records_aggregate_deterministically() {
+        let (_temp, path) = write_audit_fixture(&[
+            serde_json::json!({
+                "record_type": PROMPT_TELEMETRY_RECORD_TYPE_V1,
+                "schema_version": PROMPT_TELEMETRY_SCHEMA_VERSION,
+                "provider": "openai",
+                "status": "completed",
+                "success": true,
+                "token_usage": {
+                    "input_tokens": 4,
+                    "output_tokens": 6,
+                    "total_tokens": 10
+                }
+            }),
+            serde_json::json!({
+                "record_type": PROMPT_TELEMETRY_RECORD_TYPE_V1,
+                "schema_version": PROMPT_TELEMETRY_SCHEMA_VERSION,
+                "provider": "openai",
+                "status": "completed",
+                "success": true,
+                "token_usage": {
+                    "input_tokens": 2,
+                    "output_tokens": 3
+                }
+            }),
+        ]);
+
+        let summary = summarize_audit_file(&path).expect("summarize");
+        let provider = summary.providers.get("openai").expect("provider aggregate");
+        assert_eq!(provider.count, 2);
+        assert_eq!(provider.input_tokens, 6);
+        assert_eq!(provider.output_tokens, 9);
+        assert_eq!(provider.total_tokens, 15);
     }
 
     #[test]
