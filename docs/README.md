@@ -26,6 +26,7 @@ This index maps Tau documentation by audience and task.
 | Runtime contributor | [Startup DI Pipeline](guides/startup-di-pipeline.md) | 3-stage startup resolution: preflight gate, dependency/context composition, mode dispatch |
 | Runtime contributor | [Contract Pattern Lifecycle](guides/contract-pattern-lifecycle.md) | Shared fixture lifecycle, compatibility gates, extension checklist, anti-patterns |
 | Runtime contributor | [Tool Name Registry](guides/tool-name-registry.md) | Reserved built-in tool-name catalog and registration conflict behavior for extension + MCP external tools |
+| Runtime contributor / architect | [Crate Dependency Architecture Diagram](architecture/crate-dependency-diagram.md) | Deterministic workspace crate dependency graph generation, Mermaid view, and artifact contract |
 | Runtime contributor | [CLI Args Split Map](guides/cli-args-split-map.md) | M25 phased module-boundary plan to reduce `cli_args.rs` below 3000 LOC with API/test migration guardrails |
 | Runtime contributor | [Tools Runtime Split Map](guides/tools-split-map.md) | M25 phased module-boundary plan to reduce `tools.rs` below 3000 LOC with API/test migration guardrails |
 | Runtime contributor | [Benchmark Artifact Split Map](guides/benchmark-artifact-split-map.md) | M25 phased module-boundary plan to reduce `benchmark_artifact.rs` below 3000 LOC with API/test migration guardrails |

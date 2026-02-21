@@ -1,0 +1,987 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-21T00:00:00Z",
+  "inputs": {
+    "metadata_source": "cargo metadata --no-deps --format-version 1"
+  },
+  "summary": {
+    "workspace_crates": 45,
+    "workspace_edges": 198
+  },
+  "crates": [
+    {
+      "name": "kamn-core",
+      "manifest_path": "crates/kamn-core/Cargo.toml"
+    },
+    {
+      "name": "kamn-sdk",
+      "manifest_path": "crates/kamn-sdk/Cargo.toml"
+    },
+    {
+      "name": "tau-access",
+      "manifest_path": "crates/tau-access/Cargo.toml"
+    },
+    {
+      "name": "tau-agent-core",
+      "manifest_path": "crates/tau-agent-core/Cargo.toml"
+    },
+    {
+      "name": "tau-ai",
+      "manifest_path": "crates/tau-ai/Cargo.toml"
+    },
+    {
+      "name": "tau-algorithm",
+      "manifest_path": "crates/tau-algorithm/Cargo.toml"
+    },
+    {
+      "name": "tau-browser-automation",
+      "manifest_path": "crates/tau-browser-automation/Cargo.toml"
+    },
+    {
+      "name": "tau-cli",
+      "manifest_path": "crates/tau-cli/Cargo.toml"
+    },
+    {
+      "name": "tau-coding-agent",
+      "manifest_path": "crates/tau-coding-agent/Cargo.toml"
+    },
+    {
+      "name": "tau-contract",
+      "manifest_path": "crates/tau-contract/Cargo.toml"
+    },
+    {
+      "name": "tau-core",
+      "manifest_path": "crates/tau-core/Cargo.toml"
+    },
+    {
+      "name": "tau-custom-command",
+      "manifest_path": "crates/tau-custom-command/Cargo.toml"
+    },
+    {
+      "name": "tau-dashboard",
+      "manifest_path": "crates/tau-dashboard/Cargo.toml"
+    },
+    {
+      "name": "tau-dashboard-ui",
+      "manifest_path": "crates/tau-dashboard-ui/Cargo.toml"
+    },
+    {
+      "name": "tau-deployment",
+      "manifest_path": "crates/tau-deployment/Cargo.toml"
+    },
+    {
+      "name": "tau-diagnostics",
+      "manifest_path": "crates/tau-diagnostics/Cargo.toml"
+    },
+    {
+      "name": "tau-discord-runtime",
+      "manifest_path": "crates/tau-discord-runtime/Cargo.toml"
+    },
+    {
+      "name": "tau-events",
+      "manifest_path": "crates/tau-events/Cargo.toml"
+    },
+    {
+      "name": "tau-extensions",
+      "manifest_path": "crates/tau-extensions/Cargo.toml"
+    },
+    {
+      "name": "tau-gateway",
+      "manifest_path": "crates/tau-gateway/Cargo.toml"
+    },
+    {
+      "name": "tau-github-issues",
+      "manifest_path": "crates/tau-github-issues/Cargo.toml"
+    },
+    {
+      "name": "tau-github-issues-runtime",
+      "manifest_path": "crates/tau-github-issues-runtime/Cargo.toml"
+    },
+    {
+      "name": "tau-integration-tests",
+      "manifest_path": "tests/integration/Cargo.toml"
+    },
+    {
+      "name": "tau-memory",
+      "manifest_path": "crates/tau-memory/Cargo.toml"
+    },
+    {
+      "name": "tau-multi-channel",
+      "manifest_path": "crates/tau-multi-channel/Cargo.toml"
+    },
+    {
+      "name": "tau-onboarding",
+      "manifest_path": "crates/tau-onboarding/Cargo.toml"
+    },
+    {
+      "name": "tau-ops",
+      "manifest_path": "crates/tau-ops/Cargo.toml"
+    },
+    {
+      "name": "tau-orchestrator",
+      "manifest_path": "crates/tau-orchestrator/Cargo.toml"
+    },
+    {
+      "name": "tau-provider",
+      "manifest_path": "crates/tau-provider/Cargo.toml"
+    },
+    {
+      "name": "tau-release-channel",
+      "manifest_path": "crates/tau-release-channel/Cargo.toml"
+    },
+    {
+      "name": "tau-runtime",
+      "manifest_path": "crates/tau-runtime/Cargo.toml"
+    },
+    {
+      "name": "tau-safety",
+      "manifest_path": "crates/tau-safety/Cargo.toml"
+    },
+    {
+      "name": "tau-session",
+      "manifest_path": "crates/tau-session/Cargo.toml"
+    },
+    {
+      "name": "tau-skills",
+      "manifest_path": "crates/tau-skills/Cargo.toml"
+    },
+    {
+      "name": "tau-slack-runtime",
+      "manifest_path": "crates/tau-slack-runtime/Cargo.toml"
+    },
+    {
+      "name": "tau-startup",
+      "manifest_path": "crates/tau-startup/Cargo.toml"
+    },
+    {
+      "name": "tau-tools",
+      "manifest_path": "crates/tau-tools/Cargo.toml"
+    },
+    {
+      "name": "tau-trainer",
+      "manifest_path": "crates/tau-trainer/Cargo.toml"
+    },
+    {
+      "name": "tau-training-proxy",
+      "manifest_path": "crates/tau-training-proxy/Cargo.toml"
+    },
+    {
+      "name": "tau-training-runner",
+      "manifest_path": "crates/tau-training-runner/Cargo.toml"
+    },
+    {
+      "name": "tau-training-store",
+      "manifest_path": "crates/tau-training-store/Cargo.toml"
+    },
+    {
+      "name": "tau-training-tracer",
+      "manifest_path": "crates/tau-training-tracer/Cargo.toml"
+    },
+    {
+      "name": "tau-training-types",
+      "manifest_path": "crates/tau-training-types/Cargo.toml"
+    },
+    {
+      "name": "tau-tui",
+      "manifest_path": "crates/tau-tui/Cargo.toml"
+    },
+    {
+      "name": "tau-voice",
+      "manifest_path": "crates/tau-voice/Cargo.toml"
+    }
+  ],
+  "edges": [
+    {
+      "from": "kamn-sdk",
+      "to": "kamn-core"
+    },
+    {
+      "from": "tau-access",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-agent-core",
+      "to": "tau-ai"
+    },
+    {
+      "from": "tau-agent-core",
+      "to": "tau-memory"
+    },
+    {
+      "from": "tau-agent-core",
+      "to": "tau-safety"
+    },
+    {
+      "from": "tau-algorithm",
+      "to": "tau-ai"
+    },
+    {
+      "from": "tau-algorithm",
+      "to": "tau-trainer"
+    },
+    {
+      "from": "tau-algorithm",
+      "to": "tau-training-runner"
+    },
+    {
+      "from": "tau-algorithm",
+      "to": "tau-training-store"
+    },
+    {
+      "from": "tau-algorithm",
+      "to": "tau-training-tracer"
+    },
+    {
+      "from": "tau-algorithm",
+      "to": "tau-training-types"
+    },
+    {
+      "from": "tau-browser-automation",
+      "to": "tau-contract"
+    },
+    {
+      "from": "tau-browser-automation",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-browser-automation",
+      "to": "tau-runtime"
+    },
+    {
+      "from": "tau-cli",
+      "to": "tau-gateway"
+    },
+    {
+      "from": "tau-cli",
+      "to": "tau-multi-channel"
+    },
+    {
+      "from": "tau-cli",
+      "to": "tau-session"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-access"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-agent-core"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-ai"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-algorithm"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-browser-automation"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-cli"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-custom-command"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-dashboard"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-deployment"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-diagnostics"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-events"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-extensions"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-gateway"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-github-issues"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-github-issues-runtime"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-multi-channel"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-onboarding"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-ops"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-orchestrator"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-provider"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-release-channel"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-runtime"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-session"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-skills"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-slack-runtime"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-startup"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-tools"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-trainer"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-training-proxy"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-training-runner"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-training-store"
+    },
+    {
+      "from": "tau-coding-agent",
+      "to": "tau-voice"
+    },
+    {
+      "from": "tau-custom-command",
+      "to": "tau-contract"
+    },
+    {
+      "from": "tau-custom-command",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-custom-command",
+      "to": "tau-runtime"
+    },
+    {
+      "from": "tau-dashboard",
+      "to": "tau-contract"
+    },
+    {
+      "from": "tau-dashboard",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-dashboard",
+      "to": "tau-runtime"
+    },
+    {
+      "from": "tau-deployment",
+      "to": "kamn-sdk"
+    },
+    {
+      "from": "tau-deployment",
+      "to": "tau-cli"
+    },
+    {
+      "from": "tau-deployment",
+      "to": "tau-contract"
+    },
+    {
+      "from": "tau-deployment",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-deployment",
+      "to": "tau-runtime"
+    },
+    {
+      "from": "tau-diagnostics",
+      "to": "tau-ai"
+    },
+    {
+      "from": "tau-diagnostics",
+      "to": "tau-cli"
+    },
+    {
+      "from": "tau-diagnostics",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-diagnostics",
+      "to": "tau-multi-channel"
+    },
+    {
+      "from": "tau-diagnostics",
+      "to": "tau-provider"
+    },
+    {
+      "from": "tau-diagnostics",
+      "to": "tau-release-channel"
+    },
+    {
+      "from": "tau-events",
+      "to": "tau-ai"
+    },
+    {
+      "from": "tau-events",
+      "to": "tau-cli"
+    },
+    {
+      "from": "tau-events",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-events",
+      "to": "tau-runtime"
+    },
+    {
+      "from": "tau-extensions",
+      "to": "tau-cli"
+    },
+    {
+      "from": "tau-extensions",
+      "to": "tau-runtime"
+    },
+    {
+      "from": "tau-gateway",
+      "to": "tau-agent-core"
+    },
+    {
+      "from": "tau-gateway",
+      "to": "tau-ai"
+    },
+    {
+      "from": "tau-gateway",
+      "to": "tau-contract"
+    },
+    {
+      "from": "tau-gateway",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-gateway",
+      "to": "tau-dashboard-ui"
+    },
+    {
+      "from": "tau-gateway",
+      "to": "tau-memory"
+    },
+    {
+      "from": "tau-gateway",
+      "to": "tau-multi-channel"
+    },
+    {
+      "from": "tau-gateway",
+      "to": "tau-runtime"
+    },
+    {
+      "from": "tau-gateway",
+      "to": "tau-session"
+    },
+    {
+      "from": "tau-github-issues",
+      "to": "tau-ai"
+    },
+    {
+      "from": "tau-github-issues",
+      "to": "tau-session"
+    },
+    {
+      "from": "tau-github-issues-runtime",
+      "to": "tau-access"
+    },
+    {
+      "from": "tau-github-issues-runtime",
+      "to": "tau-agent-core"
+    },
+    {
+      "from": "tau-github-issues-runtime",
+      "to": "tau-ai"
+    },
+    {
+      "from": "tau-github-issues-runtime",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-github-issues-runtime",
+      "to": "tau-diagnostics"
+    },
+    {
+      "from": "tau-github-issues-runtime",
+      "to": "tau-github-issues"
+    },
+    {
+      "from": "tau-github-issues-runtime",
+      "to": "tau-ops"
+    },
+    {
+      "from": "tau-github-issues-runtime",
+      "to": "tau-orchestrator"
+    },
+    {
+      "from": "tau-github-issues-runtime",
+      "to": "tau-provider"
+    },
+    {
+      "from": "tau-github-issues-runtime",
+      "to": "tau-runtime"
+    },
+    {
+      "from": "tau-github-issues-runtime",
+      "to": "tau-session"
+    },
+    {
+      "from": "tau-github-issues-runtime",
+      "to": "tau-startup"
+    },
+    {
+      "from": "tau-github-issues-runtime",
+      "to": "tau-tools"
+    },
+    {
+      "from": "tau-integration-tests",
+      "to": "tau-agent-core"
+    },
+    {
+      "from": "tau-integration-tests",
+      "to": "tau-ai"
+    },
+    {
+      "from": "tau-integration-tests",
+      "to": "tau-tools"
+    },
+    {
+      "from": "tau-memory",
+      "to": "tau-contract"
+    },
+    {
+      "from": "tau-multi-channel",
+      "to": "tau-access"
+    },
+    {
+      "from": "tau-multi-channel",
+      "to": "tau-contract"
+    },
+    {
+      "from": "tau-multi-channel",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-multi-channel",
+      "to": "tau-orchestrator"
+    },
+    {
+      "from": "tau-multi-channel",
+      "to": "tau-runtime"
+    },
+    {
+      "from": "tau-onboarding",
+      "to": "tau-access"
+    },
+    {
+      "from": "tau-onboarding",
+      "to": "tau-agent-core"
+    },
+    {
+      "from": "tau-onboarding",
+      "to": "tau-ai"
+    },
+    {
+      "from": "tau-onboarding",
+      "to": "tau-browser-automation"
+    },
+    {
+      "from": "tau-onboarding",
+      "to": "tau-cli"
+    },
+    {
+      "from": "tau-onboarding",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-onboarding",
+      "to": "tau-deployment"
+    },
+    {
+      "from": "tau-onboarding",
+      "to": "tau-diagnostics"
+    },
+    {
+      "from": "tau-onboarding",
+      "to": "tau-gateway"
+    },
+    {
+      "from": "tau-onboarding",
+      "to": "tau-multi-channel"
+    },
+    {
+      "from": "tau-onboarding",
+      "to": "tau-ops"
+    },
+    {
+      "from": "tau-onboarding",
+      "to": "tau-orchestrator"
+    },
+    {
+      "from": "tau-onboarding",
+      "to": "tau-provider"
+    },
+    {
+      "from": "tau-onboarding",
+      "to": "tau-release-channel"
+    },
+    {
+      "from": "tau-onboarding",
+      "to": "tau-runtime"
+    },
+    {
+      "from": "tau-onboarding",
+      "to": "tau-skills"
+    },
+    {
+      "from": "tau-onboarding",
+      "to": "tau-startup"
+    },
+    {
+      "from": "tau-onboarding",
+      "to": "tau-tools"
+    },
+    {
+      "from": "tau-onboarding",
+      "to": "tau-voice"
+    },
+    {
+      "from": "tau-ops",
+      "to": "tau-access"
+    },
+    {
+      "from": "tau-ops",
+      "to": "tau-ai"
+    },
+    {
+      "from": "tau-ops",
+      "to": "tau-cli"
+    },
+    {
+      "from": "tau-ops",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-ops",
+      "to": "tau-events"
+    },
+    {
+      "from": "tau-ops",
+      "to": "tau-multi-channel"
+    },
+    {
+      "from": "tau-ops",
+      "to": "tau-release-channel"
+    },
+    {
+      "from": "tau-ops",
+      "to": "tau-runtime"
+    },
+    {
+      "from": "tau-ops",
+      "to": "tau-session"
+    },
+    {
+      "from": "tau-orchestrator",
+      "to": "tau-contract"
+    },
+    {
+      "from": "tau-orchestrator",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-orchestrator",
+      "to": "tau-runtime"
+    },
+    {
+      "from": "tau-provider",
+      "to": "tau-ai"
+    },
+    {
+      "from": "tau-provider",
+      "to": "tau-cli"
+    },
+    {
+      "from": "tau-provider",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-release-channel",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-runtime",
+      "to": "tau-agent-core"
+    },
+    {
+      "from": "tau-runtime",
+      "to": "tau-ai"
+    },
+    {
+      "from": "tau-runtime",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-runtime",
+      "to": "tau-session"
+    },
+    {
+      "from": "tau-session",
+      "to": "tau-ai"
+    },
+    {
+      "from": "tau-session",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-skills",
+      "to": "tau-cli"
+    },
+    {
+      "from": "tau-skills",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-slack-runtime",
+      "to": "tau-access"
+    },
+    {
+      "from": "tau-slack-runtime",
+      "to": "tau-agent-core"
+    },
+    {
+      "from": "tau-slack-runtime",
+      "to": "tau-ai"
+    },
+    {
+      "from": "tau-slack-runtime",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-slack-runtime",
+      "to": "tau-ops"
+    },
+    {
+      "from": "tau-slack-runtime",
+      "to": "tau-runtime"
+    },
+    {
+      "from": "tau-slack-runtime",
+      "to": "tau-session"
+    },
+    {
+      "from": "tau-slack-runtime",
+      "to": "tau-startup"
+    },
+    {
+      "from": "tau-slack-runtime",
+      "to": "tau-tools"
+    },
+    {
+      "from": "tau-startup",
+      "to": "tau-access"
+    },
+    {
+      "from": "tau-startup",
+      "to": "tau-ai"
+    },
+    {
+      "from": "tau-startup",
+      "to": "tau-cli"
+    },
+    {
+      "from": "tau-startup",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-startup",
+      "to": "tau-diagnostics"
+    },
+    {
+      "from": "tau-startup",
+      "to": "tau-events"
+    },
+    {
+      "from": "tau-startup",
+      "to": "tau-extensions"
+    },
+    {
+      "from": "tau-startup",
+      "to": "tau-gateway"
+    },
+    {
+      "from": "tau-startup",
+      "to": "tau-multi-channel"
+    },
+    {
+      "from": "tau-startup",
+      "to": "tau-provider"
+    },
+    {
+      "from": "tau-startup",
+      "to": "tau-runtime"
+    },
+    {
+      "from": "tau-startup",
+      "to": "tau-session"
+    },
+    {
+      "from": "tau-startup",
+      "to": "tau-tools"
+    },
+    {
+      "from": "tau-tools",
+      "to": "tau-access"
+    },
+    {
+      "from": "tau-tools",
+      "to": "tau-agent-core"
+    },
+    {
+      "from": "tau-tools",
+      "to": "tau-ai"
+    },
+    {
+      "from": "tau-tools",
+      "to": "tau-cli"
+    },
+    {
+      "from": "tau-tools",
+      "to": "tau-extensions"
+    },
+    {
+      "from": "tau-tools",
+      "to": "tau-memory"
+    },
+    {
+      "from": "tau-tools",
+      "to": "tau-provider"
+    },
+    {
+      "from": "tau-tools",
+      "to": "tau-runtime"
+    },
+    {
+      "from": "tau-tools",
+      "to": "tau-session"
+    },
+    {
+      "from": "tau-trainer",
+      "to": "tau-training-runner"
+    },
+    {
+      "from": "tau-trainer",
+      "to": "tau-training-store"
+    },
+    {
+      "from": "tau-trainer",
+      "to": "tau-training-tracer"
+    },
+    {
+      "from": "tau-trainer",
+      "to": "tau-training-types"
+    },
+    {
+      "from": "tau-training-proxy",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-training-runner",
+      "to": "tau-agent-core"
+    },
+    {
+      "from": "tau-training-runner",
+      "to": "tau-ai"
+    },
+    {
+      "from": "tau-training-runner",
+      "to": "tau-training-store"
+    },
+    {
+      "from": "tau-training-runner",
+      "to": "tau-training-tracer"
+    },
+    {
+      "from": "tau-training-runner",
+      "to": "tau-training-types"
+    },
+    {
+      "from": "tau-training-store",
+      "to": "tau-training-types"
+    },
+    {
+      "from": "tau-training-tracer",
+      "to": "tau-agent-core"
+    },
+    {
+      "from": "tau-training-tracer",
+      "to": "tau-ai"
+    },
+    {
+      "from": "tau-training-tracer",
+      "to": "tau-training-store"
+    },
+    {
+      "from": "tau-training-tracer",
+      "to": "tau-training-types"
+    },
+    {
+      "from": "tau-voice",
+      "to": "tau-contract"
+    },
+    {
+      "from": "tau-voice",
+      "to": "tau-core"
+    },
+    {
+      "from": "tau-voice",
+      "to": "tau-runtime"
+    }
+  ]
+}
