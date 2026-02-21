@@ -2635,6 +2635,95 @@ async fn integration_spec_3086_c02_ops_memory_graph_selected_node_shows_detail_p
 }
 
 #[tokio::test]
+async fn integration_spec_3090_c02_ops_memory_graph_focus_marks_connected_edges_and_neighbors() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let session_key = "ops-memory-graph-hover-focus";
+    let entries = [
+        ("mem-focus", "Focused memory", "goal", "0.70"),
+        ("mem-neighbor", "Neighbor memory", "fact", "0.50"),
+        ("mem-unrelated", "Unrelated memory", "event", "0.50"),
+    ];
+    for (entry_id, summary, memory_type, importance) in entries {
+        let create_response = client
+            .post(format!("http://{addr}/ops/memory"))
+            .form(&[
+                ("theme", "light"),
+                ("sidebar", "collapsed"),
+                ("session", session_key),
+                ("operation", "create"),
+                ("entry_id", entry_id),
+                ("summary", summary),
+                ("workspace_id", "workspace-hover"),
+                ("channel_id", "channel-hover"),
+                ("actor_id", "operator"),
+                ("memory_type", memory_type),
+                ("importance", importance),
+            ])
+            .send()
+            .await
+            .expect("create hover test memory entry");
+        assert_eq!(create_response.status(), StatusCode::OK);
+    }
+
+    let relations = [
+        ("mem-focus", "mem-neighbor", "supports", "0.42"),
+        ("mem-neighbor", "mem-unrelated", "updates", "0.20"),
+    ];
+    for (entry_id, relation_target_id, relation_type, relation_weight) in relations {
+        let relation_response = client
+            .post(format!("http://{addr}/ops/memory"))
+            .form(&[
+                ("theme", "light"),
+                ("sidebar", "collapsed"),
+                ("session", session_key),
+                ("operation", "edit"),
+                ("entry_id", entry_id),
+                ("summary", "Link relation"),
+                ("workspace_id", "workspace-hover"),
+                ("channel_id", "channel-hover"),
+                ("actor_id", "operator"),
+                ("memory_type", "goal"),
+                ("importance", "0.70"),
+                ("relation_target_id", relation_target_id),
+                ("relation_type", relation_type),
+                ("relation_weight", relation_weight),
+            ])
+            .send()
+            .await
+            .expect("add relation for hover test");
+        assert_eq!(relation_response.status(), StatusCode::OK);
+    }
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/memory-graph?theme=light&sidebar=collapsed&session={session_key}&workspace_id=workspace-hover&channel_id=channel-hover&actor_id=operator&detail_memory_id=mem-focus"
+        ))
+        .send()
+        .await
+        .expect("load ops memory graph hover focus route");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response
+        .text()
+        .await
+        .expect("read ops memory graph hover focus body");
+
+    assert!(body.contains("data-memory-id=\"mem-focus\""));
+    assert!(body.contains("data-node-hover-neighbor=\"true\""));
+    assert!(body.contains(
+        "data-source-memory-id=\"mem-focus\" data-target-memory-id=\"mem-neighbor\" data-relation-type=\"related_to\" data-relation-weight=\"0.4200\" data-edge-style-token=\"solid\" data-edge-stroke-dasharray=\"none\" data-edge-hover-highlighted=\"true\""
+    ));
+    assert!(body.contains(
+        "data-source-memory-id=\"mem-neighbor\" data-target-memory-id=\"mem-unrelated\" data-relation-type=\"updates\" data-relation-weight=\"0.2000\" data-edge-style-token=\"dashed\" data-edge-stroke-dasharray=\"6 4\" data-edge-hover-highlighted=\"false\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2798_c04_ops_shell_exposes_responsive_and_theme_contract_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");

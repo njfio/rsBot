@@ -1435,6 +1435,65 @@ fn functional_spec_3086_c02_memory_graph_route_renders_selected_node_detail_pane
 }
 
 #[test]
+fn functional_spec_3090_c02_memory_graph_route_marks_connected_edges_and_neighbors_for_focus() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::MemoryGraph,
+        theme: TauOpsDashboardTheme::Light,
+        sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot {
+            memory_detail_visible: true,
+            memory_detail_selected_entry_id: "mem-focus".to_string(),
+            memory_graph_node_rows: vec![
+                TauOpsDashboardMemoryGraphNodeRow {
+                    memory_id: "mem-focus".to_string(),
+                    memory_type: "goal".to_string(),
+                    importance: "0.7000".to_string(),
+                },
+                TauOpsDashboardMemoryGraphNodeRow {
+                    memory_id: "mem-neighbor".to_string(),
+                    memory_type: "fact".to_string(),
+                    importance: "0.5000".to_string(),
+                },
+                TauOpsDashboardMemoryGraphNodeRow {
+                    memory_id: "mem-unrelated".to_string(),
+                    memory_type: "event".to_string(),
+                    importance: "0.5000".to_string(),
+                },
+            ],
+            memory_graph_edge_rows: vec![
+                TauOpsDashboardMemoryGraphEdgeRow {
+                    source_memory_id: "mem-focus".to_string(),
+                    target_memory_id: "mem-neighbor".to_string(),
+                    relation_type: "related_to".to_string(),
+                    effective_weight: "0.4200".to_string(),
+                },
+                TauOpsDashboardMemoryGraphEdgeRow {
+                    source_memory_id: "mem-neighbor".to_string(),
+                    target_memory_id: "mem-unrelated".to_string(),
+                    relation_type: "updates".to_string(),
+                    effective_weight: "0.2000".to_string(),
+                },
+            ],
+            ..TauOpsDashboardChatSnapshot::default()
+        },
+    });
+
+    assert!(html.contains("id=\"tau-ops-memory-graph-node-0\" data-memory-id=\"mem-focus\""));
+    assert!(html.contains("id=\"tau-ops-memory-graph-node-1\" data-memory-id=\"mem-neighbor\""));
+    assert!(html.contains("id=\"tau-ops-memory-graph-node-2\" data-memory-id=\"mem-unrelated\""));
+    assert!(html.contains("data-node-selected=\"true\" data-node-hover-neighbor=\"true\""));
+    assert!(html.contains("data-node-hover-neighbor=\"false\""));
+    assert!(html.contains(
+        "data-source-memory-id=\"mem-focus\" data-target-memory-id=\"mem-neighbor\" data-relation-type=\"related_to\" data-relation-weight=\"0.4200\" data-edge-style-token=\"solid\" data-edge-stroke-dasharray=\"none\" data-edge-hover-highlighted=\"true\""
+    ));
+    assert!(html.contains(
+        "data-source-memory-id=\"mem-neighbor\" data-target-memory-id=\"mem-unrelated\" data-relation-type=\"updates\" data-relation-weight=\"0.2000\" data-edge-style-token=\"dashed\" data-edge-stroke-dasharray=\"6 4\" data-edge-hover-highlighted=\"false\""
+    ));
+}
+
+#[test]
 fn functional_spec_2838_c01_c02_c03_sessions_route_renders_sessions_panel_list_rows_and_links() {
     let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
         auth_mode: TauOpsDashboardAuthMode::Token,

@@ -997,6 +997,12 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     let memory_graph_detail_open_memory_href = format!(
         "/ops/memory?theme={theme_attr}&sidebar={sidebar_state_attr}&session={chat_session_key}&workspace_id={memory_search_workspace_id}&channel_id={memory_search_channel_id}&actor_id={memory_search_actor_id}&memory_type={memory_search_memory_type}&detail_memory_id={memory_graph_detail_selected_entry_id}"
     );
+    let focused_memory_graph_detail_id =
+        if memory_graph_detail_visible == "true" && !selected_memory_graph_detail_id.is_empty() {
+            Some(selected_memory_graph_detail_id.clone())
+        } else {
+            None
+        };
     let memory_graph_nodes_view = if memory_graph_node_rows.is_empty() {
         leptos::either::Either::Left(view! {
             <li id="tau-ops-memory-graph-empty-state" data-empty-state="true">
@@ -1021,6 +1027,24 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                     } else {
                         "false"
                     };
+                    let node_hover_neighbor = if let Some(focused_memory_id) =
+                        focused_memory_graph_detail_id.as_deref()
+                    {
+                        let is_connected_neighbor = row.memory_id.as_str() == focused_memory_id
+                            || memory_graph_edge_rows.iter().any(|edge| {
+                                (edge.source_memory_id.as_str() == focused_memory_id
+                                    && edge.target_memory_id.as_str() == row.memory_id.as_str())
+                                    || (edge.target_memory_id.as_str() == focused_memory_id
+                                        && edge.source_memory_id.as_str() == row.memory_id.as_str())
+                            });
+                        if is_connected_neighbor {
+                            "true"
+                        } else {
+                            "false"
+                        }
+                    } else {
+                        "false"
+                    };
                     let node_detail_href =
                         format!("{memory_graph_node_detail_href_prefix}{}", row.memory_id);
                     view! {
@@ -1034,6 +1058,7 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                             data-node-color-token=node_color_token
                             data-node-color-hex=node_color_hex
                             data-node-selected=node_selected
+                            data-node-hover-neighbor=node_hover_neighbor
                             data-node-detail-target="tau-ops-memory-graph-detail-panel"
                             data-node-detail-href=node_detail_href
                         ></li>
@@ -1049,6 +1074,18 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
             let row_id = format!("tau-ops-memory-graph-edge-{index}");
             let (edge_style_token, edge_stroke_dasharray) =
                 derive_memory_graph_edge_style_contracts(row.relation_type.as_str());
+            let edge_hover_highlighted =
+                if let Some(focused_memory_id) = focused_memory_graph_detail_id.as_deref() {
+                    if row.source_memory_id.as_str() == focused_memory_id
+                        || row.target_memory_id.as_str() == focused_memory_id
+                    {
+                        "true"
+                    } else {
+                        "false"
+                    }
+                } else {
+                    "false"
+                };
             view! {
                 <li
                     id=row_id
@@ -1058,6 +1095,7 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                     data-relation-weight=row.effective_weight.clone()
                     data-edge-style-token=edge_style_token
                     data-edge-stroke-dasharray=edge_stroke_dasharray
+                    data-edge-hover-highlighted=edge_hover_highlighted
                 ></li>
             }
         })
