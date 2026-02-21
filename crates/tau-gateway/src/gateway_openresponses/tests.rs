@@ -2831,6 +2831,34 @@ async fn integration_spec_3103_c02_ops_memory_graph_filter_query_updates_filter_
 }
 
 #[tokio::test]
+async fn integration_spec_3106_c02_ops_tools_route_lists_registered_inventory_rows() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state_with_fixture_tools(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/tools-jobs?theme=light&sidebar=collapsed&session=ops-tools"
+        ))
+        .send()
+        .await
+        .expect("load ops tools route");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.expect("read ops tools route body");
+
+    assert!(body.contains(
+        "id=\"tau-ops-tools-panel\" data-route=\"/ops/tools-jobs\" aria-hidden=\"false\" data-panel-visible=\"true\" data-total-tools=\"2\""
+    ));
+    assert!(body.contains("id=\"tau-ops-tools-inventory-summary\" data-total-tools=\"2\""));
+    assert!(body.contains("id=\"tau-ops-tools-inventory-table\" data-row-count=\"2\""));
+    assert!(body.contains("id=\"tau-ops-tools-inventory-row-0\" data-tool-name=\"bash\""));
+    assert!(body.contains("id=\"tau-ops-tools-inventory-row-1\" data-tool-name=\"memory_search\""));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2798_c04_ops_shell_exposes_responsive_and_theme_contract_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");

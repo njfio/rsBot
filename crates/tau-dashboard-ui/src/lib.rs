@@ -307,6 +307,18 @@ pub struct TauOpsDashboardSessionGraphEdgeRow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Public struct `TauOpsDashboardToolInventoryRow` in `tau-dashboard-ui`.
+pub struct TauOpsDashboardToolInventoryRow {
+    pub tool_name: String,
+    pub category: String,
+    pub policy: String,
+    pub usage_count: u64,
+    pub error_rate: String,
+    pub avg_latency_ms: String,
+    pub last_used_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Public struct `TauOpsDashboardChatSnapshot` in `tau-dashboard-ui`.
 pub struct TauOpsDashboardChatSnapshot {
     pub active_session_key: String,
@@ -373,6 +385,7 @@ pub struct TauOpsDashboardChatSnapshot {
     pub memory_graph_filter_relation_type: String,
     pub memory_graph_node_rows: Vec<TauOpsDashboardMemoryGraphNodeRow>,
     pub memory_graph_edge_rows: Vec<TauOpsDashboardMemoryGraphEdgeRow>,
+    pub tools_inventory_rows: Vec<TauOpsDashboardToolInventoryRow>,
 }
 
 impl Default for TauOpsDashboardChatSnapshot {
@@ -449,6 +462,7 @@ impl Default for TauOpsDashboardChatSnapshot {
             memory_graph_filter_relation_type: "all".to_string(),
             memory_graph_node_rows: vec![],
             memory_graph_edge_rows: vec![],
+            tools_inventory_rows: vec![],
         }
     }
 }
@@ -721,6 +735,16 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
         } else {
             "false"
         };
+    let tools_panel_hidden = if matches!(context.active_route, TauOpsDashboardRoute::ToolsJobs) {
+        "false"
+    } else {
+        "true"
+    };
+    let tools_panel_visible = if matches!(context.active_route, TauOpsDashboardRoute::ToolsJobs) {
+        "true"
+    } else {
+        "false"
+    };
     let command_center_panel_hidden = if matches!(context.active_route, TauOpsDashboardRoute::Ops) {
         "false"
     } else {
@@ -1237,6 +1261,54 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
             }
         })
         .collect_view();
+    let mut tools_inventory_rows = context.chat.tools_inventory_rows.clone();
+    tools_inventory_rows.sort_by(|left, right| left.tool_name.cmp(&right.tool_name));
+    let tools_total_count_value = tools_inventory_rows.len().to_string();
+    let tools_total_count_panel_attr = tools_total_count_value.clone();
+    let tools_total_count_summary_attr = tools_total_count_value.clone();
+    let tools_row_count_table_attr = tools_total_count_value.clone();
+    let tools_row_count_body_attr = tools_total_count_value;
+    let tools_inventory_rows_view = if tools_inventory_rows.is_empty() {
+        leptos::either::Either::Left(view! {
+            <tr id="tau-ops-tools-inventory-empty-state" data-empty-state="true">
+                <td colspan="7">No tools registered.</td>
+            </tr>
+        })
+    } else {
+        leptos::either::Either::Right(
+            tools_inventory_rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| {
+                    let row_id = format!("tau-ops-tools-inventory-row-{index}");
+                    let usage_count = row.usage_count.to_string();
+                    let last_used_unix_ms = row.last_used_unix_ms.to_string();
+                    let usage_count_attr = usage_count.clone();
+                    let last_used_unix_ms_attr = last_used_unix_ms.clone();
+                    view! {
+                        <tr
+                            id=row_id
+                            data-tool-name=row.tool_name.clone()
+                            data-tool-category=row.category.clone()
+                            data-tool-policy=row.policy.clone()
+                            data-usage-count=usage_count_attr
+                            data-error-rate=row.error_rate.clone()
+                            data-avg-latency-ms=row.avg_latency_ms.clone()
+                            data-last-used-unix-ms=last_used_unix_ms_attr
+                        >
+                            <td>{row.tool_name.clone()}</td>
+                            <td>{row.category.clone()}</td>
+                            <td>{row.policy.clone()}</td>
+                            <td>{usage_count}</td>
+                            <td>{row.error_rate.clone()}</td>
+                            <td>{row.avg_latency_ms.clone()}</td>
+                            <td>{last_used_unix_ms}</td>
+                        </tr>
+                    }
+                })
+                .collect_view(),
+        )
+    };
     let session_detail_panel_hidden =
         if matches!(context.active_route, TauOpsDashboardRoute::Sessions)
             && context.chat.session_detail_visible
@@ -2569,6 +2641,44 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                     Open in Memory Explorer
                                 </a>
                             </section>
+                        </section>
+                        <section
+                            id="tau-ops-tools-panel"
+                            data-route="/ops/tools-jobs"
+                            aria-hidden=tools_panel_hidden
+                            data-panel-visible=tools_panel_visible
+                            data-total-tools=tools_total_count_panel_attr
+                        >
+                            <h2>Tools & Jobs</h2>
+                            <p
+                                id="tau-ops-tools-inventory-summary"
+                                data-total-tools=tools_total_count_summary_attr
+                            >
+                                Registered tools visible in the current runtime.
+                            </p>
+                            <table
+                                id="tau-ops-tools-inventory-table"
+                                data-row-count=tools_row_count_table_attr
+                                data-column-count="7"
+                            >
+                                <thead>
+                                    <tr>
+                                        <th scope="col">Tool Name</th>
+                                        <th scope="col">Category</th>
+                                        <th scope="col">Policy</th>
+                                        <th scope="col">Usage Count</th>
+                                        <th scope="col">Error Rate</th>
+                                        <th scope="col">Avg Latency (ms)</th>
+                                        <th scope="col">Last Used (unix ms)</th>
+                                    </tr>
+                                </thead>
+                                <tbody
+                                    id="tau-ops-tools-inventory-body"
+                                    data-row-count=tools_row_count_body_attr
+                                >
+                                    {tools_inventory_rows_view}
+                                </tbody>
+                            </table>
                         </section>
                         <section
                             id="tau-ops-command-center"

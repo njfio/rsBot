@@ -8,7 +8,7 @@ use super::{
     TauOpsDashboardMemoryGraphEdgeRow, TauOpsDashboardMemoryGraphNodeRow, TauOpsDashboardRoute,
     TauOpsDashboardSessionGraphEdgeRow, TauOpsDashboardSessionGraphNodeRow,
     TauOpsDashboardSessionTimelineRow, TauOpsDashboardShellContext, TauOpsDashboardSidebarState,
-    TauOpsDashboardTheme,
+    TauOpsDashboardTheme, TauOpsDashboardToolInventoryRow,
 };
 
 #[test]
@@ -1615,6 +1615,89 @@ fn functional_spec_3103_c01_c02_memory_graph_route_renders_filter_controls_and_c
     assert!(html.contains("id=\"tau-ops-memory-graph-filter-relation-type-related-to\""));
     assert!(html.contains("graph_filter_memory_type=goal"));
     assert!(html.contains("graph_filter_relation_type=related_to"));
+}
+
+#[test]
+fn functional_spec_3106_c01_c03_tools_route_renders_inventory_panel_markers() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::ToolsJobs,
+        theme: TauOpsDashboardTheme::Light,
+        sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot::default(),
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-tools-panel\" data-route=\"/ops/tools-jobs\" aria-hidden=\"false\" data-panel-visible=\"true\" data-total-tools=\"0\""
+    ));
+    assert!(html.contains("id=\"tau-ops-tools-inventory-summary\" data-total-tools=\"0\""));
+    assert!(html.contains("id=\"tau-ops-tools-inventory-table\" data-row-count=\"0\""));
+    assert!(html.contains("id=\"tau-ops-tools-inventory-empty-state\" data-empty-state=\"true\""));
+}
+
+#[test]
+fn functional_spec_3106_c02_tools_route_renders_deterministic_inventory_rows() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::ToolsJobs,
+        theme: TauOpsDashboardTheme::Light,
+        sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot {
+            tools_inventory_rows: vec![
+                TauOpsDashboardToolInventoryRow {
+                    tool_name: "memory_search".to_string(),
+                    category: "Memory".to_string(),
+                    policy: "allowed".to_string(),
+                    usage_count: 4,
+                    error_rate: "0.25".to_string(),
+                    avg_latency_ms: "18.40".to_string(),
+                    last_used_unix_ms: 1002,
+                },
+                TauOpsDashboardToolInventoryRow {
+                    tool_name: "bash".to_string(),
+                    category: "Code".to_string(),
+                    policy: "allowed".to_string(),
+                    usage_count: 6,
+                    error_rate: "0.00".to_string(),
+                    avg_latency_ms: "12.00".to_string(),
+                    last_used_unix_ms: 1003,
+                },
+            ],
+            ..TauOpsDashboardChatSnapshot::default()
+        },
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-tools-panel\" data-route=\"/ops/tools-jobs\" aria-hidden=\"false\" data-panel-visible=\"true\" data-total-tools=\"2\""
+    ));
+    assert!(html.contains("id=\"tau-ops-tools-inventory-table\" data-row-count=\"2\""));
+    assert!(html.contains(
+        "id=\"tau-ops-tools-inventory-row-0\" data-tool-name=\"bash\" data-tool-category=\"Code\" data-tool-policy=\"allowed\" data-usage-count=\"6\" data-error-rate=\"0.00\" data-avg-latency-ms=\"12.00\" data-last-used-unix-ms=\"1003\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-tools-inventory-row-1\" data-tool-name=\"memory_search\" data-tool-category=\"Memory\" data-tool-policy=\"allowed\" data-usage-count=\"4\" data-error-rate=\"0.25\" data-avg-latency-ms=\"18.40\" data-last-used-unix-ms=\"1002\""
+    ));
+    assert!(!html.contains("id=\"tau-ops-tools-inventory-empty-state\""));
+}
+
+#[test]
+fn regression_spec_3106_c04_non_tools_routes_keep_hidden_tools_panel_markers() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::Chat,
+        theme: TauOpsDashboardTheme::Dark,
+        sidebar_state: TauOpsDashboardSidebarState::Expanded,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot::default(),
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-tools-panel\" data-route=\"/ops/tools-jobs\" aria-hidden=\"true\" data-panel-visible=\"false\" data-total-tools=\"0\""
+    ));
+    assert!(html.contains("id=\"tau-ops-tools-inventory-summary\" data-total-tools=\"0\""));
+    assert!(html.contains("id=\"tau-ops-tools-inventory-table\" data-row-count=\"0\""));
 }
 
 #[test]

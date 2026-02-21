@@ -5,6 +5,7 @@ use std::time::UNIX_EPOCH;
 use axum::extract::{Form, Path as AxumPath, State};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use serde::Deserialize;
+use tau_agent_core::{Agent, AgentConfig};
 use tau_ai::{Message, MessageRole};
 use tau_dashboard_ui::{
     render_tau_ops_dashboard_shell_with_context, TauOpsDashboardAuthMode,
@@ -14,6 +15,7 @@ use tau_dashboard_ui::{
     TauOpsDashboardMemorySearchRow, TauOpsDashboardRoute, TauOpsDashboardSessionGraphEdgeRow,
     TauOpsDashboardSessionGraphNodeRow, TauOpsDashboardSessionTimelineRow,
     TauOpsDashboardShellContext, TauOpsDashboardSidebarState, TauOpsDashboardTheme,
+    TauOpsDashboardToolInventoryRow,
 };
 use tau_memory::memory_contract::{MemoryEntry, MemoryScope};
 use tau_memory::runtime::{
@@ -512,6 +514,50 @@ fn tau_ops_chat_message_role_label(role: MessageRole) -> &'static str {
     }
 }
 
+fn derive_ops_tool_category(tool_name: &str) -> &'static str {
+    match tool_name {
+        "read" | "write" => "File I/O",
+        "memory_search" | "memory_write" => "Memory",
+        "session_reset" | "session_branch" => "Session",
+        "http_get" | "fetch" => "Network",
+        "bash" => "Code",
+        _ => "Control",
+    }
+}
+
+fn collect_ops_tools_inventory_rows(
+    state: &Arc<GatewayOpenResponsesServerState>,
+) -> Vec<TauOpsDashboardToolInventoryRow> {
+    let mut agent = Agent::new(
+        state.config.client.clone(),
+        AgentConfig {
+            model: state.config.model.clone(),
+            system_prompt: state.config.system_prompt.clone(),
+            max_turns: state.config.max_turns,
+            temperature: Some(0.0),
+            max_tokens: None,
+            ..AgentConfig::default()
+        },
+    );
+    state.config.tool_registrar.register(&mut agent);
+
+    let mut rows = agent
+        .registered_tool_names()
+        .into_iter()
+        .map(|tool_name| TauOpsDashboardToolInventoryRow {
+            category: derive_ops_tool_category(tool_name.as_str()).to_string(),
+            policy: "allowed".to_string(),
+            tool_name,
+            usage_count: 0,
+            error_rate: "0.00".to_string(),
+            avg_latency_ms: "0.00".to_string(),
+            last_used_unix_ms: 0,
+        })
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| left.tool_name.cmp(&right.tool_name));
+    rows
+}
+
 fn collect_tau_ops_dashboard_chat_snapshot(
     state: &Arc<GatewayOpenResponsesServerState>,
     controls: &OpsShellControlsQuery,
@@ -572,6 +618,7 @@ fn collect_tau_ops_dashboard_chat_snapshot(
     let memory_graph_pan_y_level = format!("{:.2}", controls.requested_memory_graph_pan_y_level());
     let memory_graph_filter_memory_type = controls.requested_memory_graph_filter_memory_type();
     let memory_graph_filter_relation_type = controls.requested_memory_graph_filter_relation_type();
+    let tools_inventory_rows = collect_ops_tools_inventory_rows(state);
     let memory_scope_filter = MemoryScopeFilter {
         workspace_id: (!memory_search_workspace_id.is_empty())
             .then_some(memory_search_workspace_id.clone()),
@@ -786,6 +833,7 @@ fn collect_tau_ops_dashboard_chat_snapshot(
         memory_graph_filter_relation_type,
         memory_graph_node_rows,
         memory_graph_edge_rows,
+        tools_inventory_rows,
     }
 }
 
