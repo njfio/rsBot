@@ -1,6 +1,6 @@
 # Spec: Issue #2988 - Split channel lifecycle and UI telemetry handlers into channel_telemetry_runtime module
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 `gateway_openresponses.rs` still embeds channel lifecycle and UI telemetry handler logic, expanding hotspot size and mixing concerns.
