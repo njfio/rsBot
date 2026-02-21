@@ -38,6 +38,10 @@ pub(super) struct OpsShellControlsQuery {
     detail_memory_id: String,
     #[serde(default)]
     graph_zoom: String,
+    #[serde(default)]
+    graph_pan_x: String,
+    #[serde(default)]
+    graph_pan_y: String,
 }
 
 impl OpsShellControlsQuery {
@@ -178,6 +182,24 @@ impl OpsShellControlsQuery {
             .ok()
             .map(|value| value.clamp(0.25, 2.0))
             .unwrap_or(1.0)
+    }
+
+    pub(super) fn requested_memory_graph_pan_x_level(&self) -> f32 {
+        self.graph_pan_x
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|value| value.clamp(-500.0, 500.0))
+            .unwrap_or(0.0)
+    }
+
+    pub(super) fn requested_memory_graph_pan_y_level(&self) -> f32 {
+        self.graph_pan_y
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|value| value.clamp(-500.0, 500.0))
+            .unwrap_or(0.0)
     }
 }
 
@@ -427,5 +449,28 @@ mod tests {
             ..OpsShellControlsQuery::default()
         };
         assert_eq!(too_high.requested_memory_graph_zoom_level(), 2.0);
+    }
+
+    #[test]
+    fn unit_requested_memory_graph_pan_levels_default_and_clamp_values() {
+        let default_pan = OpsShellControlsQuery::default();
+        assert_eq!(default_pan.requested_memory_graph_pan_x_level(), 0.0);
+        assert_eq!(default_pan.requested_memory_graph_pan_y_level(), 0.0);
+
+        let valid = OpsShellControlsQuery {
+            graph_pan_x: "325.5".to_string(),
+            graph_pan_y: "-124.25".to_string(),
+            ..OpsShellControlsQuery::default()
+        };
+        assert_eq!(valid.requested_memory_graph_pan_x_level(), 325.5);
+        assert_eq!(valid.requested_memory_graph_pan_y_level(), -124.25);
+
+        let clamped = OpsShellControlsQuery {
+            graph_pan_x: "9999".to_string(),
+            graph_pan_y: "-9999".to_string(),
+            ..OpsShellControlsQuery::default()
+        };
+        assert_eq!(clamped.requested_memory_graph_pan_x_level(), 500.0);
+        assert_eq!(clamped.requested_memory_graph_pan_y_level(), -500.0);
     }
 }

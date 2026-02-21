@@ -367,6 +367,8 @@ pub struct TauOpsDashboardChatSnapshot {
     pub memory_detail_embedding_dimensions: usize,
     pub memory_detail_relation_rows: Vec<TauOpsDashboardMemoryRelationRow>,
     pub memory_graph_zoom_level: String,
+    pub memory_graph_pan_x_level: String,
+    pub memory_graph_pan_y_level: String,
     pub memory_graph_node_rows: Vec<TauOpsDashboardMemoryGraphNodeRow>,
     pub memory_graph_edge_rows: Vec<TauOpsDashboardMemoryGraphEdgeRow>,
 }
@@ -439,6 +441,8 @@ impl Default for TauOpsDashboardChatSnapshot {
             memory_detail_embedding_dimensions: 0,
             memory_detail_relation_rows: vec![],
             memory_graph_zoom_level: "1.00".to_string(),
+            memory_graph_pan_x_level: "0.00".to_string(),
+            memory_graph_pan_y_level: "0.00".to_string(),
             memory_graph_node_rows: vec![],
             memory_graph_edge_rows: vec![],
         }
@@ -990,13 +994,61 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
         format!("{:.2}", (memory_graph_zoom_level_value + 0.10).min(2.0));
     let memory_graph_zoom_out_level =
         format!("{:.2}", (memory_graph_zoom_level_value - 0.10).max(0.25));
-    let memory_graph_zoom_href_base = format!(
+    let memory_graph_pan_x_value = context
+        .chat
+        .memory_graph_pan_x_level
+        .parse::<f32>()
+        .ok()
+        .unwrap_or(0.0)
+        .clamp(-500.0, 500.0);
+    let memory_graph_pan_y_value = context
+        .chat
+        .memory_graph_pan_y_level
+        .parse::<f32>()
+        .ok()
+        .unwrap_or(0.0)
+        .clamp(-500.0, 500.0);
+    let memory_graph_pan_x_level = format!("{:.2}", memory_graph_pan_x_value);
+    let memory_graph_pan_y_level = format!("{:.2}", memory_graph_pan_y_value);
+    let memory_graph_pan_step_value = 25.0f32;
+    let memory_graph_pan_step = format!("{:.2}", memory_graph_pan_step_value);
+    let memory_graph_pan_left_x_level = format!(
+        "{:.2}",
+        (memory_graph_pan_x_value - memory_graph_pan_step_value).max(-500.0)
+    );
+    let memory_graph_pan_right_x_level = format!(
+        "{:.2}",
+        (memory_graph_pan_x_value + memory_graph_pan_step_value).min(500.0)
+    );
+    let memory_graph_pan_up_y_level = format!(
+        "{:.2}",
+        (memory_graph_pan_y_value - memory_graph_pan_step_value).max(-500.0)
+    );
+    let memory_graph_pan_down_y_level = format!(
+        "{:.2}",
+        (memory_graph_pan_y_value + memory_graph_pan_step_value).min(500.0)
+    );
+    let memory_graph_route_href_base = format!(
         "/ops/memory-graph?theme={theme_attr}&sidebar={sidebar_state_attr}&session={chat_session_key}&workspace_id={memory_search_workspace_id}&channel_id={memory_search_channel_id}&actor_id={memory_search_actor_id}&memory_type={memory_search_memory_type}"
     );
-    let memory_graph_zoom_in_href =
-        format!("{memory_graph_zoom_href_base}&graph_zoom={memory_graph_zoom_in_level}");
-    let memory_graph_zoom_out_href =
-        format!("{memory_graph_zoom_href_base}&graph_zoom={memory_graph_zoom_out_level}");
+    let memory_graph_zoom_in_href = format!(
+        "{memory_graph_route_href_base}&graph_zoom={memory_graph_zoom_in_level}&graph_pan_x={memory_graph_pan_x_level}&graph_pan_y={memory_graph_pan_y_level}"
+    );
+    let memory_graph_zoom_out_href = format!(
+        "{memory_graph_route_href_base}&graph_zoom={memory_graph_zoom_out_level}&graph_pan_x={memory_graph_pan_x_level}&graph_pan_y={memory_graph_pan_y_level}"
+    );
+    let memory_graph_pan_left_href = format!(
+        "{memory_graph_route_href_base}&graph_zoom={memory_graph_zoom_level}&graph_pan_x={memory_graph_pan_left_x_level}&graph_pan_y={memory_graph_pan_y_level}"
+    );
+    let memory_graph_pan_right_href = format!(
+        "{memory_graph_route_href_base}&graph_zoom={memory_graph_zoom_level}&graph_pan_x={memory_graph_pan_right_x_level}&graph_pan_y={memory_graph_pan_y_level}"
+    );
+    let memory_graph_pan_up_href = format!(
+        "{memory_graph_route_href_base}&graph_zoom={memory_graph_zoom_level}&graph_pan_x={memory_graph_pan_x_level}&graph_pan_y={memory_graph_pan_up_y_level}"
+    );
+    let memory_graph_pan_down_href = format!(
+        "{memory_graph_route_href_base}&graph_zoom={memory_graph_zoom_level}&graph_pan_x={memory_graph_pan_x_level}&graph_pan_y={memory_graph_pan_down_y_level}"
+    );
     let memory_graph_node_count = memory_graph_node_rows.len().to_string();
     let memory_graph_edge_count = memory_graph_edge_rows.len().to_string();
     let memory_graph_node_count_panel_attr = memory_graph_node_count.clone();
@@ -2364,6 +2416,41 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                     href=memory_graph_zoom_out_href
                                 >
                                     Zoom -
+                                </a>
+                            </div>
+                            <div
+                                id="tau-ops-memory-graph-pan-controls"
+                                data-pan-x=memory_graph_pan_x_level
+                                data-pan-y=memory_graph_pan_y_level
+                                data-pan-step=memory_graph_pan_step
+                            >
+                                <a
+                                    id="tau-ops-memory-graph-pan-left"
+                                    data-pan-action="left"
+                                    href=memory_graph_pan_left_href
+                                >
+                                    Pan Left
+                                </a>
+                                <a
+                                    id="tau-ops-memory-graph-pan-right"
+                                    data-pan-action="right"
+                                    href=memory_graph_pan_right_href
+                                >
+                                    Pan Right
+                                </a>
+                                <a
+                                    id="tau-ops-memory-graph-pan-up"
+                                    data-pan-action="up"
+                                    href=memory_graph_pan_up_href
+                                >
+                                    Pan Up
+                                </a>
+                                <a
+                                    id="tau-ops-memory-graph-pan-down"
+                                    data-pan-action="down"
+                                    href=memory_graph_pan_down_href
+                                >
+                                    Pan Down
                                 </a>
                             </div>
                             <section
