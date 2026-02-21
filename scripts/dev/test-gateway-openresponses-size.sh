@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 ROOT_MODULE="${REPO_ROOT}/crates/tau-gateway/src/gateway_openresponses.rs"
 EVENTS_MODULE="${REPO_ROOT}/crates/tau-gateway/src/gateway_openresponses/events_status.rs"
-MAX_LINES=410
+MAX_LINES=260
 
 if [[ ! -f "${ROOT_MODULE}" ]]; then
   echo "assertion failed (root module exists): ${ROOT_MODULE}" >&2
@@ -158,6 +158,11 @@ fi
 
 if rg -q '^async fn handle_openresponses\\b' "${ROOT_MODULE}"; then
   echo "assertion failed (openresponses entry handler moved): found 'handle_openresponses' in root module" >&2
+  exit 1
+fi
+
+if rg -q '^async fn execute_openresponses_request\\b' "${ROOT_MODULE}"; then
+  echo "assertion failed (openresponses execution handler moved): found 'execute_openresponses_request' in root module" >&2
   exit 1
 fi
 
