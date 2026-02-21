@@ -11,6 +11,11 @@ This reference documents the HTTP/SSE/WS routes wired in:
 
 If this document and the router differ, treat the router as canonical and update this file.
 
+**Route inventory:** 70 router route calls (`.route(...)` entries in `gateway_openresponses.rs`).
+
+Method-path entries documented below include chained route methods (for example
+`get(...).put(...).delete(...)`) and currently total 78 entries.
+
 ## Auth and Policy Contracts
 
 ### Auth modes
@@ -29,7 +34,7 @@ If this document and the router differ, treat the router as canonical and update
 - `allow_session_write`: required for session append/reset APIs.
 - `allow_memory_write`: required for memory write/update/delete APIs.
 
-## Endpoint Inventory
+## Endpoint Inventory (78 method-path entries)
 
 Auth column values:
 
@@ -162,4 +167,3 @@ perl -0777 -ne 'while(/const\\s+([A-Z0-9_]+(?:ENDPOINT|ENDPOINT_TEMPLATE)):\\s*&
 Then verify each documented path exists in this file and include the literal route:
 
 - `/ops/sessions/branch`
-

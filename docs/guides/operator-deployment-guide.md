@@ -32,6 +32,16 @@ export OPENAI_API_KEY="local-dev-placeholder"
 export TAU_GATEWAY_PORT="8791"
 ```
 
+## Auth Modes and Tokens
+
+- `localhost-dev`: local-only bootstrap mode, no bearer required for protected routes.
+- `token`: bearer token required on protected routes (`Authorization: Bearer <token>`).
+- `password-session`: obtain bearer token via `/gateway/auth/session`, then use bearer on protected routes.
+
+For endpoint-specific details, see `docs/guides/gateway-api-reference.md`.
+
+## Quick Start (Localhost-Dev)
+
 ## Step 1: Start gateway in local smoke posture
 
 Use `localhost-dev` auth for local bring-up validation:
@@ -138,6 +148,33 @@ git revert <commit>
 ```
 
 Then rerun this guide from Step 1 through Step 4 before re-promotion.
+
+## Rollback Procedure
+
+1. Stop gateway service posture:
+
+```bash
+cargo run -p tau-coding-agent -- \
+  --gateway-state-dir .tau/gateway \
+  --gateway-service-stop \
+  --gateway-service-stop-reason emergency_rollback
+```
+
+2. Revert code if needed:
+
+```bash
+git revert <commit>
+```
+
+3. Re-run bring-up and readiness checks:
+
+```bash
+scripts/dev/operator-readiness-live-check.sh \
+  --base-url http://127.0.0.1:${TAU_GATEWAY_PORT:-8791} \
+  --auth-mode none \
+  --expect-gateway-health-state healthy \
+  --expect-gateway-rollout-gate pass
+```
 
 ## Related Runbooks
 
