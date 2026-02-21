@@ -53,6 +53,7 @@ mod dashboard_runtime;
 mod dashboard_shell_page;
 mod dashboard_status;
 mod deploy_runtime;
+mod endpoints;
 mod events_status;
 mod external_agent_runtime;
 mod jobs_runtime;
@@ -107,6 +108,7 @@ use dashboard_status::{
     collect_tau_ops_dashboard_command_center_snapshot, GatewayDashboardActionRequest,
 };
 use deploy_runtime::{handle_gateway_agent_stop, handle_gateway_deploy};
+use endpoints::*;
 use events_status::collect_gateway_events_status_report;
 use external_agent_runtime::{
     handle_external_coding_agent_open_session, handle_external_coding_agent_reap,
@@ -164,87 +166,6 @@ use types::{
 };
 use webchat_page::render_gateway_webchat_page;
 use websocket::run_gateway_ws_connection;
-
-const OPENRESPONSES_ENDPOINT: &str = "/v1/responses";
-const OPENAI_CHAT_COMPLETIONS_ENDPOINT: &str = "/v1/chat/completions";
-const OPENAI_COMPLETIONS_ENDPOINT: &str = "/v1/completions";
-const OPENAI_MODELS_ENDPOINT: &str = "/v1/models";
-const OPS_DASHBOARD_ENDPOINT: &str = "/ops";
-const OPS_DASHBOARD_AGENTS_ENDPOINT: &str = "/ops/agents";
-const OPS_DASHBOARD_AGENT_DETAIL_ENDPOINT: &str = "/ops/agents/{agent_id}";
-const OPS_DASHBOARD_CHAT_ENDPOINT: &str = "/ops/chat";
-const OPS_DASHBOARD_CHAT_NEW_ENDPOINT: &str = "/ops/chat/new";
-const OPS_DASHBOARD_CHAT_SEND_ENDPOINT: &str = "/ops/chat/send";
-const OPS_DASHBOARD_SESSIONS_ENDPOINT: &str = "/ops/sessions";
-const OPS_DASHBOARD_SESSION_DETAIL_ENDPOINT: &str = "/ops/sessions/{session_key}";
-const OPS_DASHBOARD_MEMORY_ENDPOINT: &str = "/ops/memory";
-const OPS_DASHBOARD_MEMORY_GRAPH_ENDPOINT: &str = "/ops/memory-graph";
-const OPS_DASHBOARD_TOOLS_JOBS_ENDPOINT: &str = "/ops/tools-jobs";
-const OPS_DASHBOARD_CHANNELS_ENDPOINT: &str = "/ops/channels";
-const OPS_DASHBOARD_CONFIG_ENDPOINT: &str = "/ops/config";
-const OPS_DASHBOARD_TRAINING_ENDPOINT: &str = "/ops/training";
-const OPS_DASHBOARD_SAFETY_ENDPOINT: &str = "/ops/safety";
-const OPS_DASHBOARD_DIAGNOSTICS_ENDPOINT: &str = "/ops/diagnostics";
-const OPS_DASHBOARD_DEPLOY_ENDPOINT: &str = "/ops/deploy";
-const OPS_DASHBOARD_LOGIN_ENDPOINT: &str = "/ops/login";
-const DASHBOARD_SHELL_ENDPOINT: &str = "/dashboard";
-const WEBCHAT_ENDPOINT: &str = "/webchat";
-const GATEWAY_STATUS_ENDPOINT: &str = "/gateway/status";
-const GATEWAY_WS_ENDPOINT: &str = "/gateway/ws";
-const GATEWAY_AUTH_BOOTSTRAP_ENDPOINT: &str = "/gateway/auth/bootstrap";
-const GATEWAY_AUTH_SESSION_ENDPOINT: &str = "/gateway/auth/session";
-const GATEWAY_SESSIONS_ENDPOINT: &str = "/gateway/sessions";
-const GATEWAY_SESSION_DETAIL_ENDPOINT: &str = "/gateway/sessions/{session_key}";
-const GATEWAY_SESSION_APPEND_ENDPOINT: &str = "/gateway/sessions/{session_key}/append";
-const GATEWAY_SESSION_RESET_ENDPOINT: &str = "/gateway/sessions/{session_key}/reset";
-const GATEWAY_MEMORY_ENDPOINT: &str = "/gateway/memory/{session_key}";
-const GATEWAY_MEMORY_ENTRY_ENDPOINT: &str = "/gateway/memory/{session_key}/{entry_id}";
-const GATEWAY_MEMORY_GRAPH_ENDPOINT: &str = "/gateway/memory-graph/{session_key}";
-const API_MEMORIES_GRAPH_ENDPOINT: &str = "/api/memories/graph";
-const GATEWAY_CHANNEL_LIFECYCLE_ENDPOINT: &str = "/gateway/channels/{channel}/lifecycle";
-const GATEWAY_CONFIG_ENDPOINT: &str = "/gateway/config";
-const GATEWAY_SAFETY_POLICY_ENDPOINT: &str = "/gateway/safety/policy";
-const GATEWAY_SAFETY_RULES_ENDPOINT: &str = "/gateway/safety/rules";
-const GATEWAY_SAFETY_TEST_ENDPOINT: &str = "/gateway/safety/test";
-const GATEWAY_AUDIT_SUMMARY_ENDPOINT: &str = "/gateway/audit/summary";
-const GATEWAY_AUDIT_LOG_ENDPOINT: &str = "/gateway/audit/log";
-const GATEWAY_TRAINING_STATUS_ENDPOINT: &str = "/gateway/training/status";
-const GATEWAY_TRAINING_ROLLOUTS_ENDPOINT: &str = "/gateway/training/rollouts";
-const GATEWAY_TRAINING_CONFIG_ENDPOINT: &str = "/gateway/training/config";
-const GATEWAY_TOOLS_ENDPOINT: &str = "/gateway/tools";
-const GATEWAY_TOOLS_STATS_ENDPOINT: &str = "/gateway/tools/stats";
-const GATEWAY_JOBS_ENDPOINT: &str = "/gateway/jobs";
-const GATEWAY_JOB_CANCEL_ENDPOINT_TEMPLATE: &str = "/gateway/jobs/{job_id}/cancel";
-const GATEWAY_DEPLOY_ENDPOINT: &str = "/gateway/deploy";
-const GATEWAY_AGENT_STOP_ENDPOINT_TEMPLATE: &str = "/gateway/agents/{agent_id}/stop";
-const GATEWAY_UI_TELEMETRY_ENDPOINT: &str = "/gateway/ui/telemetry";
-const CORTEX_CHAT_ENDPOINT: &str = "/cortex/chat";
-const CORTEX_STATUS_ENDPOINT: &str = "/cortex/status";
-const DASHBOARD_HEALTH_ENDPOINT: &str = "/dashboard/health";
-const DASHBOARD_WIDGETS_ENDPOINT: &str = "/dashboard/widgets";
-const DASHBOARD_QUEUE_TIMELINE_ENDPOINT: &str = "/dashboard/queue-timeline";
-const DASHBOARD_ALERTS_ENDPOINT: &str = "/dashboard/alerts";
-const DASHBOARD_ACTIONS_ENDPOINT: &str = "/dashboard/actions";
-const DASHBOARD_STREAM_ENDPOINT: &str = "/dashboard/stream";
-const EXTERNAL_CODING_AGENT_SESSIONS_ENDPOINT: &str = "/gateway/external-coding-agent/sessions";
-const EXTERNAL_CODING_AGENT_SESSION_DETAIL_ENDPOINT: &str =
-    "/gateway/external-coding-agent/sessions/{session_id}";
-const EXTERNAL_CODING_AGENT_SESSION_PROGRESS_ENDPOINT: &str =
-    "/gateway/external-coding-agent/sessions/{session_id}/progress";
-const EXTERNAL_CODING_AGENT_SESSION_FOLLOWUPS_ENDPOINT: &str =
-    "/gateway/external-coding-agent/sessions/{session_id}/followups";
-const EXTERNAL_CODING_AGENT_SESSION_FOLLOWUPS_DRAIN_ENDPOINT: &str =
-    "/gateway/external-coding-agent/sessions/{session_id}/followups/drain";
-const EXTERNAL_CODING_AGENT_SESSION_STREAM_ENDPOINT: &str =
-    "/gateway/external-coding-agent/sessions/{session_id}/stream";
-const EXTERNAL_CODING_AGENT_SESSION_CLOSE_ENDPOINT: &str =
-    "/gateway/external-coding-agent/sessions/{session_id}/close";
-const EXTERNAL_CODING_AGENT_REAP_ENDPOINT: &str = "/gateway/external-coding-agent/reap";
-const DEFAULT_SESSION_KEY: &str = "default";
-const INPUT_BODY_SIZE_MULTIPLIER: usize = 8;
-const GATEWAY_WS_HEARTBEAT_REQUEST_ID: &str = "gateway-heartbeat";
-const SESSION_WRITE_POLICY_GATE: &str = "allow_session_write";
-const MEMORY_WRITE_POLICY_GATE: &str = "allow_memory_write";
 
 #[derive(Clone)]
 /// Public struct `GatewayOpenResponsesServerConfig` used across Tau components.
