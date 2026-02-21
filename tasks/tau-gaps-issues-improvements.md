@@ -32,7 +32,7 @@ This document supersedes Review #30 and refreshes closure status/evidence agains
 | 3 | Add `.env.example` | Done | **Done** | `.env.example` exists |
 | 4 | Audit log sanitization | Partial | **Done** | `crates/tau-runtime/src/observability_loggers_runtime.rs` includes `spec_2612_*` redaction tests |
 | 5 | Integration test suite | Open | **Done** | `tests/integration/tests/agent_tool_memory_roundtrip.rs` exists (4 integration tests) |
-| 6 | Expand under-tested crates | Partial | **Partial** | Direct crate-local test marker counts remain low in this snapshot (`tau-diagnostics` 6, `tau-training-proxy` 6, `tau-context` 0, `tau-embedding-engine` 0) |
+| 6 | Expand under-tested crates | Partial | **Partial** | Direct crate-local test marker counts remain low in this snapshot (`tau-training-proxy` 6, `kamn-core` 4, `kamn-sdk` 5) |
 | 7 | Add CHANGELOG.md | Done | **Done** | `CHANGELOG.md` exists |
 | 8 | cargo-deny / cargo-audit | Done | **Done** | `deny.toml` + `.github/workflows/security.yml` |
 | 9 | Clean stale branches | Open | **Done** | `scripts/dev/stale-merged-branch-prune.sh` exists; remote heads reduced (current: 380) |
@@ -60,7 +60,7 @@ This document supersedes Review #30 and refreshes closure status/evidence agains
 ### 2.1 Remaining Functional Gaps
 
 1. **Under-tested crate wave follow-through**
-   The original expansion issue closed, but direct crate-local test depth remains lower than desired for selected crates (`tau-context`, `tau-embedding-engine`, and the smaller QA crates listed above).
+   The original expansion issue closed, but direct crate-local test depth remains lower than desired for selected crates (`tau-training-proxy`, `kamn-core`, `kamn-sdk`, and adjacent QA surfaces).
 
 2. **Cortex decision automation (optional roadmap extension)**
    `/cortex/chat` is now LLM-backed, but automated supervisor actuation/routing overrides are still a separate design decision beyond the delivered observer/chat baseline.
@@ -101,8 +101,8 @@ This document supersedes Review #30 and refreshes closure status/evidence agains
 | Integration breadth | `tests/integration/` contains one file with 4 tests | Expand scenario count for channel routing/compaction/delegation |
 | tau-diagnostics | 6 direct test markers | Add edge-case coverage for audit aggregation and telemetry compatibility |
 | tau-training-proxy | 6 direct test markers | Add persistence/recovery and malformed-rollout cases |
-| tau-context | 0 direct marker hits in crate-local scan | Add threshold/compaction boundary tests |
-| tau-embedding-engine | 0 direct marker hits in crate-local scan | Add provider fallback + dimension mismatch checks |
+| kamn-core | 4 direct test markers | Add boundary tests for identity/auth edge cases |
+| kamn-sdk | 5 direct test markers | Add contract and integration fixture coverage for SDK call paths |
 
 ### 4.2 Missing/Light Categories
 

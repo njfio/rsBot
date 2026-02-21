@@ -55,4 +55,8 @@ assert_not_contains "${doc_contents}" "| Operator deployment guide | **Missing**
 assert_contains "${doc_contents}" "| Operator deployment guide | **Done** | \`docs/guides/operator-deployment-guide.md\` |" "operator guide done"
 assert_contains "${doc_contents}" "| API reference | **Done** | \`docs/guides/gateway-api-reference.md\` |" "api reference done"
 
+# Stale crate references from earlier drafts must stay removed.
+assert_not_contains "${doc_contents}" "tau-context" "stale tau-context reference"
+assert_not_contains "${doc_contents}" "tau-embedding-engine" "stale tau-embedding-engine reference"
+
 echo "tau-gaps-issues-improvements conformance passed"
