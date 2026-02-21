@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-02-21T00:00:00Z",
+  "inputs": {
+    "router_path": "crates/tau-gateway/src/gateway_openresponses.rs",
+    "api_doc_path": "docs/guides/gateway-api-reference.md"
+  },
+  "actual_counts": {
+    "route_calls": 70,
+    "method_path_rows": 78
+  },
+  "doc_markers": {
+    "route_inventory_marker": 70,
+    "method_path_inventory_marker": 78
+  },
+  "drift": {
+    "route_calls_match": true,
+    "method_path_rows_match": true,
+    "ok": true
+  }
+}

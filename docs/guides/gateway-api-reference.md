@@ -167,3 +167,11 @@ perl -0777 -ne 'while(/const\\s+([A-Z0-9_]+(?:ENDPOINT|ENDPOINT_TEMPLATE)):\\s*&
 Then verify each documented path exists in this file and include the literal route:
 
 - `/ops/sessions/branch`
+
+Automated drift guard (fails non-zero if docs markers and extracted counts diverge):
+
+```bash
+scripts/dev/gateway-api-route-inventory.sh \
+  --output-json tasks/reports/gateway-api-route-inventory.json \
+  --output-md tasks/reports/gateway-api-route-inventory.md
+```
