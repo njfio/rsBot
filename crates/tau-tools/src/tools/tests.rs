@@ -4122,6 +4122,158 @@ proptest! {
     }
 }
 
+proptest! {
+    #[test]
+    fn spec_3156_c01_rate_limit_boundary_reset_allows_new_capacity(
+        max_requests in 1u32..24,
+        window_ms in 1u64..10_000,
+    ) {
+        let mut policy = ToolPolicy::new(vec![PathBuf::from(".")]);
+        policy.tool_rate_limit_max_requests = max_requests;
+        policy.tool_rate_limit_window_ms = window_ms;
+
+        let principal = "prop:spec-3156-c01";
+        let start_unix_ms = 4_000_000_u64;
+        for _ in 0..max_requests {
+            prop_assert!(policy.evaluate_rate_limit(principal, start_unix_ms).is_none());
+        }
+        prop_assert!(policy.evaluate_rate_limit(principal, start_unix_ms).is_some());
+
+        prop_assert!(
+            policy
+                .evaluate_rate_limit(principal, start_unix_ms.saturating_add(window_ms))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn spec_3156_c02_rate_limit_throttles_again_after_replenished_capacity_is_consumed(
+        max_requests in 1u32..24,
+        window_ms in 1u64..10_000,
+    ) {
+        let mut policy = ToolPolicy::new(vec![PathBuf::from(".")]);
+        policy.tool_rate_limit_max_requests = max_requests;
+        policy.tool_rate_limit_window_ms = window_ms;
+
+        let principal = "prop:spec-3156-c02";
+        let start_unix_ms = 5_000_000_u64;
+        for _ in 0..max_requests {
+            prop_assert!(policy.evaluate_rate_limit(principal, start_unix_ms).is_none());
+        }
+        prop_assert!(policy.evaluate_rate_limit(principal, start_unix_ms).is_some());
+
+        let replenished_unix_ms = start_unix_ms.saturating_add(window_ms);
+        for _ in 0..max_requests {
+            prop_assert!(
+                policy
+                    .evaluate_rate_limit(principal, replenished_unix_ms)
+                    .is_none()
+            );
+        }
+        let (retry_after_ms, _, _) = policy
+            .evaluate_rate_limit(principal, replenished_unix_ms)
+            .expect("throttle should recur after replenished capacity is consumed");
+        prop_assert!(retry_after_ms <= window_ms);
+    }
+
+    #[test]
+    fn spec_3156_c03_disabled_max_requests_zero_never_throttles(
+        request_count in 0usize..120,
+    ) {
+        let mut policy = ToolPolicy::new(vec![PathBuf::from(".")]);
+        policy.tool_rate_limit_max_requests = 0;
+        policy.tool_rate_limit_window_ms = 1_000;
+
+        for _ in 0..request_count {
+            prop_assert!(
+                policy
+                    .evaluate_rate_limit("prop:spec-3156-c03", 6_000_000)
+                    .is_none()
+            );
+        }
+        let counters = policy.rate_limit_counters();
+        prop_assert_eq!(counters.throttle_events_total, 0);
+        prop_assert_eq!(counters.tracked_principals, 0);
+    }
+
+    #[test]
+    fn spec_3156_c04_disabled_window_zero_never_throttles(
+        request_count in 0usize..120,
+    ) {
+        let mut policy = ToolPolicy::new(vec![PathBuf::from(".")]);
+        policy.tool_rate_limit_max_requests = 5;
+        policy.tool_rate_limit_window_ms = 0;
+
+        for _ in 0..request_count {
+            prop_assert!(
+                policy
+                    .evaluate_rate_limit("prop:spec-3156-c04", 7_000_000)
+                    .is_none()
+            );
+        }
+        let counters = policy.rate_limit_counters();
+        prop_assert_eq!(counters.throttle_events_total, 0);
+        prop_assert_eq!(counters.tracked_principals, 0);
+    }
+
+    #[test]
+    fn spec_3156_c05_rate_limit_gate_payload_contract_is_stable(
+        tool_name in "[a-z][a-z0-9_]{0,16}",
+        principal in "[A-Za-z0-9:_-]{1,24}",
+        payload_value in ".{0,40}",
+        use_defer_behavior in any::<bool>(),
+    ) {
+        let mut policy = ToolPolicy::new(vec![PathBuf::from(".")]);
+        policy.tool_rate_limit_max_requests = 1;
+        policy.tool_rate_limit_window_ms = 60_000;
+        policy.rbac_principal = Some(format!("  {principal}  "));
+        policy.tool_rate_limit_exceeded_behavior = if use_defer_behavior {
+            ToolRateLimitExceededBehavior::Defer
+        } else {
+            ToolRateLimitExceededBehavior::Reject
+        };
+
+        let payload = serde_json::json!({
+            "case_id": "spec-3156-c05",
+            "value": payload_value,
+        });
+        prop_assert!(
+            evaluate_tool_rate_limit_gate(&policy, tool_name.as_str(), payload.clone()).is_none()
+        );
+        let denied = evaluate_tool_rate_limit_gate(&policy, tool_name.as_str(), payload.clone())
+            .expect("second gate evaluation should throttle");
+        prop_assert!(denied.is_error);
+        let content = denied.content;
+
+        let (expected_decision, expected_reason_code) = if use_defer_behavior {
+            ("defer", "rate_limit_deferred")
+        } else {
+            ("reject", "rate_limit_rejected")
+        };
+        prop_assert_eq!(content["policy_rule"].as_str(), Some("rate_limit"));
+        prop_assert_eq!(content["policy_decision"].as_str(), Some("deny"));
+        prop_assert_eq!(content["decision"].as_str(), Some(expected_decision));
+        prop_assert_eq!(content["reason_code"].as_str(), Some(expected_reason_code));
+        prop_assert_eq!(content["principal"].as_str(), Some(principal.as_str()));
+        let expected_action = format!("tool:{tool_name}");
+        prop_assert_eq!(
+            content["action"].as_str(),
+            Some(expected_action.as_str())
+        );
+        prop_assert_eq!(content.get("payload"), Some(&payload));
+        prop_assert_eq!(content["max_requests"].as_u64(), Some(1));
+        prop_assert_eq!(content["window_ms"].as_u64(), Some(60_000));
+
+        let retry_after_ms = content["retry_after_ms"].as_u64().unwrap_or(u64::MAX);
+        prop_assert!(retry_after_ms <= 60_000);
+        let window_resets_unix_ms = content["window_resets_unix_ms"].as_u64().unwrap_or(0);
+        prop_assert!(window_resets_unix_ms >= retry_after_ms);
+
+        let error = content["error"].as_str().unwrap_or_default();
+        prop_assert!(error.contains(principal.as_str()));
+    }
+}
+
 #[test]
 fn redact_secrets_replaces_sensitive_env_values() {
     std::env::set_var("TEST_API_KEY", "secret-value-123");
