@@ -2162,6 +2162,103 @@ fn regression_spec_3132_c04_non_channels_routes_keep_hidden_channel_action_marke
 }
 
 #[test]
+fn functional_spec_3140_c01_config_route_renders_configuration_panel_contracts() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::Config,
+        theme: TauOpsDashboardTheme::Light,
+        sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot::default(),
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-config-panel\" data-route=\"/ops/config\" aria-hidden=\"false\" data-panel-visible=\"true\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-config-endpoints\" data-config-get-endpoint=\"/gateway/config\" data-config-patch-endpoint=\"/gateway/config\""
+    ));
+}
+
+#[test]
+fn functional_spec_3140_c02_training_route_renders_training_panel_contracts() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::Training,
+        theme: TauOpsDashboardTheme::Dark,
+        sidebar_state: TauOpsDashboardSidebarState::Expanded,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot::default(),
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-training-panel\" data-route=\"/ops/training\" aria-hidden=\"false\" data-panel-visible=\"true\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-training-endpoints\" data-training-status-endpoint=\"/gateway/training/status\" data-training-rollouts-endpoint=\"/gateway/training/rollouts\" data-training-config-endpoint=\"/gateway/training/config\""
+    ));
+}
+
+#[test]
+fn functional_spec_3140_c03_safety_and_diagnostics_routes_render_panel_contracts() {
+    let safety_html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::Safety,
+        theme: TauOpsDashboardTheme::Dark,
+        sidebar_state: TauOpsDashboardSidebarState::Expanded,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot::default(),
+    });
+    assert!(safety_html.contains(
+        "id=\"tau-ops-safety-panel\" data-route=\"/ops/safety\" aria-hidden=\"false\" data-panel-visible=\"true\""
+    ));
+    assert!(safety_html.contains(
+        "id=\"tau-ops-safety-endpoints\" data-safety-policy-get-endpoint=\"/gateway/safety/policy\" data-safety-policy-put-endpoint=\"/gateway/safety/policy\" data-safety-rules-get-endpoint=\"/gateway/safety/rules\" data-safety-rules-put-endpoint=\"/gateway/safety/rules\" data-safety-test-endpoint=\"/gateway/safety/test\""
+    ));
+
+    let diagnostics_html =
+        render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+            auth_mode: TauOpsDashboardAuthMode::Token,
+            active_route: TauOpsDashboardRoute::Diagnostics,
+            theme: TauOpsDashboardTheme::Light,
+            sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+            command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+            chat: TauOpsDashboardChatSnapshot::default(),
+        });
+    assert!(diagnostics_html.contains(
+        "id=\"tau-ops-diagnostics-panel\" data-route=\"/ops/diagnostics\" aria-hidden=\"false\" data-panel-visible=\"true\""
+    ));
+    assert!(diagnostics_html.contains(
+        "id=\"tau-ops-diagnostics-endpoints\" data-audit-summary-endpoint=\"/gateway/audit/summary\" data-audit-log-endpoint=\"/gateway/audit/log\" data-ui-telemetry-endpoint=\"/gateway/ui/telemetry\""
+    ));
+}
+
+#[test]
+fn regression_spec_3140_c05_non_target_routes_keep_hidden_route_panels() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::Ops,
+        theme: TauOpsDashboardTheme::Dark,
+        sidebar_state: TauOpsDashboardSidebarState::Expanded,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot::default(),
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-config-panel\" data-route=\"/ops/config\" aria-hidden=\"true\" data-panel-visible=\"false\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-training-panel\" data-route=\"/ops/training\" aria-hidden=\"true\" data-panel-visible=\"false\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-safety-panel\" data-route=\"/ops/safety\" aria-hidden=\"true\" data-panel-visible=\"false\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-diagnostics-panel\" data-route=\"/ops/diagnostics\" aria-hidden=\"true\" data-panel-visible=\"false\""
+    ));
+}
+
+#[test]
 fn functional_spec_2838_c01_c02_c03_sessions_route_renders_sessions_panel_list_rows_and_links() {
     let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
         auth_mode: TauOpsDashboardAuthMode::Token,

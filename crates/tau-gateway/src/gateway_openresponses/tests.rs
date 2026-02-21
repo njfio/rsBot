@@ -3076,6 +3076,38 @@ async fn integration_spec_3132_c03_ops_channels_route_renders_channel_action_con
 }
 
 #[tokio::test]
+async fn integration_spec_3140_c04_ops_routes_render_config_training_safety_diagnostics_panels() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 4_096, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+    let route_cases = [
+        ("/ops/config", "id=\"tau-ops-config-panel\" data-route=\"/ops/config\" aria-hidden=\"false\" data-panel-visible=\"true\""),
+        ("/ops/training", "id=\"tau-ops-training-panel\" data-route=\"/ops/training\" aria-hidden=\"false\" data-panel-visible=\"true\""),
+        ("/ops/safety", "id=\"tau-ops-safety-panel\" data-route=\"/ops/safety\" aria-hidden=\"false\" data-panel-visible=\"true\""),
+        ("/ops/diagnostics", "id=\"tau-ops-diagnostics-panel\" data-route=\"/ops/diagnostics\" aria-hidden=\"false\" data-panel-visible=\"true\""),
+    ];
+
+    for (route, expected_panel_marker) in route_cases {
+        let response = client
+            .get(format!(
+                "http://{addr}{route}?theme=light&sidebar=collapsed&session=ops-route-contract"
+            ))
+            .send()
+            .await
+            .expect("load ops route");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.text().await.expect("read ops route body");
+        assert!(
+            body.contains(expected_panel_marker),
+            "missing marker for route {route}"
+        );
+    }
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2798_c04_ops_shell_exposes_responsive_and_theme_contract_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");

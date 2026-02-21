@@ -800,6 +800,48 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
     } else {
         "false"
     };
+    let config_panel_hidden = if matches!(context.active_route, TauOpsDashboardRoute::Config) {
+        "false"
+    } else {
+        "true"
+    };
+    let config_panel_visible = if matches!(context.active_route, TauOpsDashboardRoute::Config) {
+        "true"
+    } else {
+        "false"
+    };
+    let training_panel_hidden = if matches!(context.active_route, TauOpsDashboardRoute::Training) {
+        "false"
+    } else {
+        "true"
+    };
+    let training_panel_visible = if matches!(context.active_route, TauOpsDashboardRoute::Training) {
+        "true"
+    } else {
+        "false"
+    };
+    let safety_panel_hidden = if matches!(context.active_route, TauOpsDashboardRoute::Safety) {
+        "false"
+    } else {
+        "true"
+    };
+    let safety_panel_visible = if matches!(context.active_route, TauOpsDashboardRoute::Safety) {
+        "true"
+    } else {
+        "false"
+    };
+    let diagnostics_panel_hidden =
+        if matches!(context.active_route, TauOpsDashboardRoute::Diagnostics) {
+            "false"
+        } else {
+            "true"
+        };
+    let diagnostics_panel_visible =
+        if matches!(context.active_route, TauOpsDashboardRoute::Diagnostics) {
+            "true"
+        } else {
+            "false"
+        };
     let command_center_panel_hidden = if matches!(context.active_route, TauOpsDashboardRoute::Ops) {
         "false"
     } else {
@@ -3266,6 +3308,75 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                     {channels_rows_view}
                                 </tbody>
                             </table>
+                        </section>
+                        <section
+                            id="tau-ops-config-panel"
+                            data-route="/ops/config"
+                            aria-hidden=config_panel_hidden
+                            data-panel-visible=config_panel_visible
+                        >
+                            <h2>Configuration</h2>
+                            <p>Gateway runtime configuration read/write contracts.</p>
+                            <section
+                                id="tau-ops-config-endpoints"
+                                data-config-get-endpoint="/gateway/config"
+                                data-config-patch-endpoint="/gateway/config"
+                            >
+                                <h3>Config Endpoints</h3>
+                            </section>
+                        </section>
+                        <section
+                            id="tau-ops-training-panel"
+                            data-route="/ops/training"
+                            aria-hidden=training_panel_hidden
+                            data-panel-visible=training_panel_visible
+                        >
+                            <h2>Training & RL</h2>
+                            <p>Training status and rollout contract endpoints.</p>
+                            <section
+                                id="tau-ops-training-endpoints"
+                                data-training-status-endpoint="/gateway/training/status"
+                                data-training-rollouts-endpoint="/gateway/training/rollouts"
+                                data-training-config-endpoint="/gateway/training/config"
+                            >
+                                <h3>Training Endpoints</h3>
+                            </section>
+                        </section>
+                        <section
+                            id="tau-ops-safety-panel"
+                            data-route="/ops/safety"
+                            aria-hidden=safety_panel_hidden
+                            data-panel-visible=safety_panel_visible
+                        >
+                            <h2>Safety & Security</h2>
+                            <p>Safety policy/rules contract endpoints.</p>
+                            <section
+                                id="tau-ops-safety-endpoints"
+                                data-safety-policy-get-endpoint="/gateway/safety/policy"
+                                data-safety-policy-put-endpoint="/gateway/safety/policy"
+                                data-safety-rules-get-endpoint="/gateway/safety/rules"
+                                data-safety-rules-put-endpoint="/gateway/safety/rules"
+                                data-safety-test-endpoint="/gateway/safety/test"
+                            >
+                                <h3>Safety Endpoints</h3>
+                            </section>
+                        </section>
+                        <section
+                            id="tau-ops-diagnostics-panel"
+                            data-route="/ops/diagnostics"
+                            aria-hidden=diagnostics_panel_hidden
+                            data-panel-visible=diagnostics_panel_visible
+                        >
+                            <h2>Diagnostics & Audit</h2>
+                            <p>Audit and telemetry contract endpoints.</p>
+                            <section
+                                id="tau-ops-diagnostics-endpoints"
+                                data-audit-summary-endpoint="/gateway/audit/summary"
+                                data-audit-log-endpoint="/gateway/audit/log"
+                                data-ui-telemetry-endpoint="/gateway/ui/telemetry"
+                            >
+                                <h3>Diagnostics Endpoints</h3>
+                            </section>
                         </section>
                         <section
                             id="tau-ops-command-center"
