@@ -281,12 +281,13 @@ pub fn percentile_duration_ms(values: &[u64], percentile_numerator: u64) -> u64 
 
 pub fn render_audit_summary(path: &Path, summary: &AuditSummary) -> String {
     let mut lines = vec![format!(
-        "audit summary: path={} records={} tool_events={} prompt_records={} lifecycle_records={} lifecycle_non_compliant={}",
+        "audit summary: path={} records={} tool_events={} prompt_records={} lifecycle_records={} lifecycle_compliant={} lifecycle_non_compliant={}",
         path.display(),
         summary.record_count,
         summary.tool_event_count,
         summary.prompt_record_count,
         summary.lifecycle_control_record_count,
+        summary.lifecycle_control_compliant_count,
         summary.lifecycle_control_non_compliant_count,
     )];
 
@@ -1893,6 +1894,22 @@ mod tests {
         (temp, path)
     }
 
+    fn write_raw_audit_fixture(lines: &[&str]) -> (tempfile::TempDir, std::path::PathBuf) {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("audit-raw.jsonl");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .expect("open raw audit fixture file");
+        for line in lines {
+            writeln!(file, "{line}").expect("write raw fixture line");
+        }
+        file.flush().expect("flush raw fixture file");
+        (temp, path)
+    }
+
     #[test]
     fn unit_summarize_audit_file_accepts_prompt_telemetry_v1_schema() {
         let (_temp, path) = write_audit_fixture(&[serde_json::json!({
@@ -2051,5 +2068,56 @@ mod tests {
         assert!(rendered.contains("memory_search count=3"));
         assert!(rendered.contains("p95_ms=21"));
         assert!(rendered.contains("provider_breakdown:"));
+    }
+
+    #[test]
+    fn unit_spec_3008_c01_diagnostics_doctor_arg_parser_rejects_duplicate_online() {
+        let duplicate_online = parse_doctor_command_args("--online --online")
+            .expect_err("duplicate online flag must fail closed");
+        assert_eq!(duplicate_online.to_string(), DOCTOR_USAGE);
+
+        let unknown_flag = parse_doctor_command_args("--json --unknown")
+            .expect_err("unknown flags must fail closed");
+        assert_eq!(unknown_flag.to_string(), DOCTOR_USAGE);
+    }
+
+    #[test]
+    fn functional_spec_3008_c02_summarize_audit_file_handles_blank_lines_and_mixed_records() {
+        let (_temp, path) = write_raw_audit_fixture(&[
+            "",
+            r#"{"record_type":"prompt_telemetry_v1","schema_version":1,"provider":"openai","status":"completed","success":true,"duration_ms":11,"token_usage":{"input_tokens":5,"output_tokens":7,"total_tokens":12}}"#,
+            r#"{"event":"tool_execution_end","tool_name":"memory_search","is_error":false,"duration_ms":6}"#,
+            r#"{"record_type":"lifecycle_control_audit_v1","schema_version":1,"timestamp_unix_ms":100,"request_id":"req-ok","run_id":"run-1","action":"resume","from_state":"inactive","to_state":"running","status":"accepted"}"#,
+            r#"{"record_type":"lifecycle_control_audit_v1","schema_version":1,"timestamp_unix_ms":101,"request_id":"req-bad","run_id":"run-1","action":"invalid","from_state":"running","to_state":"running","status":"accepted"}"#,
+            "",
+        ]);
+
+        let summary = summarize_audit_file(&path).expect("summarize mixed fixture");
+        assert_eq!(summary.record_count, 4);
+        assert_eq!(summary.prompt_record_count, 1);
+        assert_eq!(summary.tool_event_count, 1);
+        assert_eq!(summary.lifecycle_control_record_count, 2);
+        assert_eq!(summary.lifecycle_control_compliant_count, 1);
+        assert_eq!(summary.lifecycle_control_non_compliant_count, 1);
+
+        let rendered = render_audit_summary(&path, &summary);
+        assert!(rendered.contains("lifecycle_records=2"));
+        assert!(rendered.contains("lifecycle_compliant=1"));
+        assert!(rendered.contains("lifecycle_non_compliant=1"));
+    }
+
+    #[test]
+    fn regression_spec_3008_c03_summarize_audit_file_reports_line_context_for_malformed_json() {
+        let (_temp, path) = write_raw_audit_fixture(&[
+            r#"{"event":"tool_execution_end","tool_name":"bash","is_error":false,"duration_ms":3}"#,
+            "{\"record_type\":",
+        ]);
+
+        let error = summarize_audit_file(&path).expect_err("malformed json must fail closed");
+        let message = error.to_string();
+        assert!(
+            message.contains("failed to parse JSON at line 2"),
+            "expected parse context in error, got: {message}"
+        );
     }
 }
