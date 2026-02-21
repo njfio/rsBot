@@ -1523,6 +1523,41 @@ fn functional_spec_3094_c01_c02_memory_graph_route_renders_default_zoom_markers_
 }
 
 #[test]
+fn functional_spec_3099_c01_c02_memory_graph_route_renders_default_pan_markers_and_actions() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::MemoryGraph,
+        theme: TauOpsDashboardTheme::Light,
+        sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot {
+            active_session_key: "ops-pan".to_string(),
+            memory_search_workspace_id: "workspace-pan".to_string(),
+            memory_search_channel_id: "channel-pan".to_string(),
+            memory_search_actor_id: "operator".to_string(),
+            memory_search_memory_type: "goal".to_string(),
+            ..TauOpsDashboardChatSnapshot::default()
+        },
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-memory-graph-pan-controls\" data-pan-x=\"0.00\" data-pan-y=\"0.00\" data-pan-step=\"25.00\""
+    ));
+    assert!(html.contains("id=\"tau-ops-memory-graph-pan-left\""));
+    assert!(html.contains("data-pan-action=\"left\""));
+    assert!(html.contains("graph_pan_x=-25.00"));
+    assert!(html.contains("id=\"tau-ops-memory-graph-pan-right\""));
+    assert!(html.contains("data-pan-action=\"right\""));
+    assert!(html.contains("graph_pan_x=25.00"));
+    assert!(html.contains("id=\"tau-ops-memory-graph-pan-up\""));
+    assert!(html.contains("data-pan-action=\"up\""));
+    assert!(html.contains("graph_pan_y=-25.00"));
+    assert!(html.contains("id=\"tau-ops-memory-graph-pan-down\""));
+    assert!(html.contains("data-pan-action=\"down\""));
+    assert!(html.contains("graph_pan_y=25.00"));
+}
+
+#[test]
 fn functional_spec_2838_c01_c02_c03_sessions_route_renders_sessions_panel_list_rows_and_links() {
     let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
         auth_mode: TauOpsDashboardAuthMode::Token,

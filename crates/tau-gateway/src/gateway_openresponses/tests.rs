@@ -2757,6 +2757,45 @@ async fn integration_spec_3094_c02_ops_memory_graph_zoom_query_clamps_and_update
 }
 
 #[tokio::test]
+async fn integration_spec_3099_c02_ops_memory_graph_pan_query_clamps_and_updates_actions() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/memory-graph?theme=light&sidebar=collapsed&session=ops-pan&workspace_id=workspace-pan&channel_id=channel-pan&actor_id=operator&memory_type=goal&graph_zoom=1.95&graph_pan_x=490&graph_pan_y=-495"
+        ))
+        .send()
+        .await
+        .expect("load ops memory graph pan route");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response
+        .text()
+        .await
+        .expect("read ops memory graph pan body");
+
+    assert!(body.contains(
+        "id=\"tau-ops-memory-graph-pan-controls\" data-pan-x=\"490.00\" data-pan-y=\"-495.00\" data-pan-step=\"25.00\""
+    ));
+    assert!(body.contains("id=\"tau-ops-memory-graph-pan-left\""));
+    assert!(body.contains("data-pan-action=\"left\""));
+    assert!(body.contains("graph_pan_x=465.00"));
+    assert!(body.contains("id=\"tau-ops-memory-graph-pan-right\""));
+    assert!(body.contains("data-pan-action=\"right\""));
+    assert!(body.contains("graph_pan_x=500.00"));
+    assert!(body.contains("id=\"tau-ops-memory-graph-pan-up\""));
+    assert!(body.contains("data-pan-action=\"up\""));
+    assert!(body.contains("graph_pan_y=-500.00"));
+    assert!(body.contains("id=\"tau-ops-memory-graph-pan-down\""));
+    assert!(body.contains("data-pan-action=\"down\""));
+    assert!(body.contains("graph_pan_y=-470.00"));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2798_c04_ops_shell_exposes_responsive_and_theme_contract_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");
