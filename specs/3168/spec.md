@@ -1,6 +1,6 @@
 # Spec: Issue #3168 - kamn-core label boundary validation hardening
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 `kamn-core` currently allows identifier labels that begin or end with `-` or `_`. This weakens input boundary guarantees for network/subject identity values used in DID generation and auth-adjacent workflows.
