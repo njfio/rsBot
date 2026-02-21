@@ -673,6 +673,41 @@ fn expand_channel_template(template: &str, channel: &str) -> String {
 }
 
 #[test]
+fn unit_gateway_openresponses_server_state_sequence_is_monotonic() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+
+    assert_eq!(state.next_sequence(), 1);
+    assert_eq!(state.next_sequence(), 2);
+    assert_eq!(state.next_sequence(), 3);
+}
+
+#[test]
+fn unit_gateway_openresponses_server_state_generates_prefixed_unique_ids() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+
+    let first_response_id = state.next_response_id();
+    let second_response_id = state.next_response_id();
+    let first_output_id = state.next_output_message_id();
+    let second_output_id = state.next_output_message_id();
+
+    assert!(first_response_id.starts_with("resp_"));
+    assert_eq!(first_response_id.len(), "resp_".len() + 16);
+    assert!(first_response_id["resp_".len()..]
+        .chars()
+        .all(|character| character.is_ascii_hexdigit()));
+    assert_ne!(first_response_id, second_response_id);
+
+    assert!(first_output_id.starts_with("msg_"));
+    assert_eq!(first_output_id.len(), "msg_".len() + 16);
+    assert!(first_output_id["msg_".len()..]
+        .chars()
+        .all(|character| character.is_ascii_hexdigit()));
+    assert_ne!(first_output_id, second_output_id);
+}
+
+#[test]
 fn unit_translate_openresponses_request_supports_item_input_and_function_call_output() {
     let request = OpenResponsesRequest {
         model: None,
