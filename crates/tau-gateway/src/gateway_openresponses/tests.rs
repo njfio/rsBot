@@ -2436,6 +2436,124 @@ async fn integration_spec_3078_c02_ops_memory_graph_node_color_markers_follow_me
 }
 
 #[tokio::test]
+async fn integration_spec_3082_c02_ops_memory_graph_edge_style_markers_follow_relation_type() {
+    let temp = tempdir().expect("tempdir");
+    let state = test_state(temp.path(), 10_000, "secret");
+    let (addr, handle) = spawn_test_server(state).await.expect("spawn server");
+    let client = Client::new();
+
+    let session_key = "ops-memory-graph-edge-style";
+    let target_rows = [
+        ("mem-edge-target-0", "Target related"),
+        ("mem-edge-target-1", "Target updates"),
+        ("mem-edge-target-2", "Target contradicts"),
+        ("mem-edge-target-3", "Target caused-by"),
+    ];
+
+    for (entry_id, summary) in target_rows {
+        let create_response = client
+            .post(format!("http://{addr}/ops/memory"))
+            .form(&[
+                ("theme", "light"),
+                ("sidebar", "collapsed"),
+                ("session", session_key),
+                ("operation", "create"),
+                ("entry_id", entry_id),
+                ("summary", summary),
+                ("workspace_id", "workspace-edge-style"),
+                ("channel_id", "channel-edge-style"),
+                ("actor_id", "operator"),
+                ("memory_type", "fact"),
+                ("importance", "0.50"),
+            ])
+            .send()
+            .await
+            .expect("create memory graph target row");
+        assert_eq!(create_response.status(), StatusCode::OK);
+    }
+
+    let source_rows = [
+        (
+            "mem-edge-source-0",
+            "Source related",
+            "mem-edge-target-0",
+            "supports",
+        ),
+        (
+            "mem-edge-source-1",
+            "Source updates",
+            "mem-edge-target-1",
+            "updates",
+        ),
+        (
+            "mem-edge-source-2",
+            "Source contradicts",
+            "mem-edge-target-2",
+            "contradicts",
+        ),
+        (
+            "mem-edge-source-3",
+            "Source caused-by",
+            "mem-edge-target-3",
+            "depends_on",
+        ),
+    ];
+
+    for (entry_id, summary, relation_target_id, relation_type) in source_rows {
+        let create_response = client
+            .post(format!("http://{addr}/ops/memory"))
+            .form(&[
+                ("theme", "light"),
+                ("sidebar", "collapsed"),
+                ("session", session_key),
+                ("operation", "create"),
+                ("entry_id", entry_id),
+                ("summary", summary),
+                ("workspace_id", "workspace-edge-style"),
+                ("channel_id", "channel-edge-style"),
+                ("actor_id", "operator"),
+                ("memory_type", "goal"),
+                ("importance", "0.50"),
+                ("relation_target_id", relation_target_id),
+                ("relation_type", relation_type),
+                ("relation_weight", "0.42"),
+            ])
+            .send()
+            .await
+            .expect("create memory graph source row");
+        assert_eq!(create_response.status(), StatusCode::OK);
+    }
+
+    let response = client
+        .get(format!(
+            "http://{addr}/ops/memory-graph?theme=light&sidebar=collapsed&session={session_key}&workspace_id=workspace-edge-style&channel_id=channel-edge-style&actor_id=operator"
+        ))
+        .send()
+        .await
+        .expect("load ops memory graph edge style route");
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response
+        .text()
+        .await
+        .expect("read ops memory graph edge style body");
+
+    assert!(body.contains(
+        "data-source-memory-id=\"mem-edge-source-0\" data-target-memory-id=\"mem-edge-target-0\" data-relation-type=\"related_to\" data-relation-weight=\"0.4200\" data-edge-style-token=\"solid\" data-edge-stroke-dasharray=\"none\""
+    ));
+    assert!(body.contains(
+        "data-source-memory-id=\"mem-edge-source-1\" data-target-memory-id=\"mem-edge-target-1\" data-relation-type=\"updates\" data-relation-weight=\"0.4200\" data-edge-style-token=\"dashed\" data-edge-stroke-dasharray=\"6 4\""
+    ));
+    assert!(body.contains(
+        "data-source-memory-id=\"mem-edge-source-2\" data-target-memory-id=\"mem-edge-target-2\" data-relation-type=\"contradicts\" data-relation-weight=\"0.4200\" data-edge-style-token=\"dotted\" data-edge-stroke-dasharray=\"2 4\""
+    ));
+    assert!(body.contains(
+        "data-source-memory-id=\"mem-edge-source-3\" data-target-memory-id=\"mem-edge-target-3\" data-relation-type=\"caused_by\" data-relation-weight=\"0.4200\" data-edge-style-token=\"dashed\" data-edge-stroke-dasharray=\"6 4\""
+    ));
+
+    handle.abort();
+}
+
+#[tokio::test]
 async fn functional_spec_2798_c04_ops_shell_exposes_responsive_and_theme_contract_markers() {
     let temp = tempdir().expect("tempdir");
     let state = test_state(temp.path(), 4_096, "secret");

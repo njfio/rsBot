@@ -5,9 +5,10 @@ use super::{
     TauOpsDashboardAlertFeedRow, TauOpsDashboardAuthMode, TauOpsDashboardChatMessageRow,
     TauOpsDashboardChatSessionOptionRow, TauOpsDashboardChatSnapshot,
     TauOpsDashboardCommandCenterSnapshot, TauOpsDashboardConnectorHealthRow,
-    TauOpsDashboardMemoryGraphNodeRow, TauOpsDashboardRoute, TauOpsDashboardSessionGraphEdgeRow,
-    TauOpsDashboardSessionGraphNodeRow, TauOpsDashboardSessionTimelineRow,
-    TauOpsDashboardShellContext, TauOpsDashboardSidebarState, TauOpsDashboardTheme,
+    TauOpsDashboardMemoryGraphEdgeRow, TauOpsDashboardMemoryGraphNodeRow, TauOpsDashboardRoute,
+    TauOpsDashboardSessionGraphEdgeRow, TauOpsDashboardSessionGraphNodeRow,
+    TauOpsDashboardSessionTimelineRow, TauOpsDashboardShellContext, TauOpsDashboardSidebarState,
+    TauOpsDashboardTheme,
 };
 
 #[test]
@@ -1324,6 +1325,59 @@ fn functional_spec_3078_c02_memory_graph_route_renders_node_color_markers_from_m
     ));
     assert!(html.contains(
         "id=\"tau-ops-memory-graph-node-1\" data-memory-id=\"mem-color-event\" data-memory-type=\"event\" data-importance=\"0.5000\" data-node-size-bucket=\"medium\" data-node-size-px=\"20.00\" data-node-color-token=\"event\" data-node-color-hex=\"#7c3aed\""
+    ));
+}
+
+#[test]
+fn functional_spec_3082_c02_memory_graph_route_renders_edge_style_markers_from_relation_type() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::MemoryGraph,
+        theme: TauOpsDashboardTheme::Light,
+        sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot {
+            memory_graph_edge_rows: vec![
+                TauOpsDashboardMemoryGraphEdgeRow {
+                    source_memory_id: "mem-edge-a".to_string(),
+                    target_memory_id: "mem-edge-b".to_string(),
+                    relation_type: "related_to".to_string(),
+                    effective_weight: "0.4200".to_string(),
+                },
+                TauOpsDashboardMemoryGraphEdgeRow {
+                    source_memory_id: "mem-edge-b".to_string(),
+                    target_memory_id: "mem-edge-c".to_string(),
+                    relation_type: "updates".to_string(),
+                    effective_weight: "0.5500".to_string(),
+                },
+                TauOpsDashboardMemoryGraphEdgeRow {
+                    source_memory_id: "mem-edge-c".to_string(),
+                    target_memory_id: "mem-edge-d".to_string(),
+                    relation_type: "contradicts".to_string(),
+                    effective_weight: "0.6600".to_string(),
+                },
+                TauOpsDashboardMemoryGraphEdgeRow {
+                    source_memory_id: "mem-edge-d".to_string(),
+                    target_memory_id: "mem-edge-e".to_string(),
+                    relation_type: "depends_on".to_string(),
+                    effective_weight: "0.7700".to_string(),
+                },
+            ],
+            ..TauOpsDashboardChatSnapshot::default()
+        },
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-memory-graph-edge-0\" data-source-memory-id=\"mem-edge-a\" data-target-memory-id=\"mem-edge-b\" data-relation-type=\"related_to\" data-relation-weight=\"0.4200\" data-edge-style-token=\"solid\" data-edge-stroke-dasharray=\"none\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-memory-graph-edge-1\" data-source-memory-id=\"mem-edge-b\" data-target-memory-id=\"mem-edge-c\" data-relation-type=\"updates\" data-relation-weight=\"0.5500\" data-edge-style-token=\"dashed\" data-edge-stroke-dasharray=\"6 4\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-memory-graph-edge-2\" data-source-memory-id=\"mem-edge-c\" data-target-memory-id=\"mem-edge-d\" data-relation-type=\"contradicts\" data-relation-weight=\"0.6600\" data-edge-style-token=\"dotted\" data-edge-stroke-dasharray=\"2 4\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-memory-graph-edge-3\" data-source-memory-id=\"mem-edge-d\" data-target-memory-id=\"mem-edge-e\" data-relation-type=\"depends_on\" data-relation-weight=\"0.7700\" data-edge-style-token=\"dashed\" data-edge-stroke-dasharray=\"6 4\""
     ));
 }
 
