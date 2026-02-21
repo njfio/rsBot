@@ -106,6 +106,9 @@ fn normalize_identifier(label: &str, value: &str) -> Result<String> {
     if trimmed.is_empty() {
         bail!("{label} cannot be empty");
     }
+    if trimmed.starts_with('.') || trimmed.ends_with('.') || trimmed.contains("..") {
+        bail!("{label} contains empty label segments");
+    }
     if trimmed
         .chars()
         .any(|ch| !(ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == '.'))
@@ -126,6 +129,15 @@ fn to_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{build_browser_did_identity, BrowserDidIdentityRequest, DidMethod};
+
+    fn base_request(method: DidMethod) -> BrowserDidIdentityRequest {
+        BrowserDidIdentityRequest {
+            method,
+            network: "tau-devnet".to_string(),
+            subject: "agent_alpha".to_string(),
+            entropy: "seed-001".to_string(),
+        }
+    }
 
     #[test]
     fn unit_build_browser_did_identity_requires_non_empty_entropy() {
@@ -185,5 +197,71 @@ mod tests {
         assert!(error
             .to_string()
             .contains("subject contains unsupported characters"));
+    }
+
+    #[test]
+    fn spec_c01_rejects_network_with_empty_dot_segment() {
+        let mut request = base_request(DidMethod::Web);
+        request.network = "edge..tau".to_string();
+
+        let error = build_browser_did_identity(&request)
+            .expect_err("network with empty segment should fail");
+        assert!(error
+            .to_string()
+            .contains("network contains empty label segments"));
+    }
+
+    #[test]
+    fn spec_c02_rejects_subject_with_empty_dot_segment() {
+        let mut request = base_request(DidMethod::Web);
+        request.network = "edge.tau.local".to_string();
+        request.subject = "agent..primary".to_string();
+
+        let error = build_browser_did_identity(&request)
+            .expect_err("subject with empty segment should fail");
+        assert!(error
+            .to_string()
+            .contains("subject contains empty label segments"));
+    }
+
+    #[test]
+    fn spec_c03_normalizes_network_and_subject_to_canonical_lowercase() {
+        let identity = build_browser_did_identity(&BrowserDidIdentityRequest {
+            method: DidMethod::Web,
+            network: "  EDGE.TAU.Local  ".to_string(),
+            subject: "  Operator_One  ".to_string(),
+            entropy: "seed-001".to_string(),
+        })
+        .expect("request with mixed case and padding should succeed");
+
+        assert_eq!(identity.network, "edge.tau.local");
+        assert_eq!(identity.subject, "operator_one");
+    }
+
+    #[test]
+    fn spec_c04_key_method_outputs_are_stable_for_equivalent_normalized_inputs() {
+        let canonical = build_browser_did_identity(&BrowserDidIdentityRequest {
+            method: DidMethod::Key,
+            network: "tau-devnet".to_string(),
+            subject: "agent_alpha".to_string(),
+            entropy: "seed-001".to_string(),
+        })
+        .expect("canonical request should succeed");
+        let normalized_equivalent = build_browser_did_identity(&BrowserDidIdentityRequest {
+            method: DidMethod::Key,
+            network: "  TAU-DEVNET ".to_string(),
+            subject: " AGENT_ALPHA ".to_string(),
+            entropy: "seed-001".to_string(),
+        })
+        .expect("equivalent normalized request should succeed");
+
+        assert!(canonical.did.starts_with("did:key:z"));
+        assert_eq!(canonical.key_id, format!("{}#primary", canonical.did));
+        assert_eq!(canonical.did, normalized_equivalent.did);
+        assert_eq!(canonical.fingerprint, normalized_equivalent.fingerprint);
+        assert_eq!(
+            canonical.proof_material,
+            normalized_equivalent.proof_material
+        );
     }
 }
