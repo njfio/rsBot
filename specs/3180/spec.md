@@ -1,6 +1,6 @@
 # Spec: Issue #3180 - enforce prompt_telemetry_v1 schema-version requirement
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 The diagnostics summarizer currently accepts `prompt_telemetry_v1` records with missing `schema_version`. That violates v1 schema strictness and can count malformed telemetry as valid provider records.
