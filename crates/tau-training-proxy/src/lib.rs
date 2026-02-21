@@ -397,6 +397,14 @@ async fn append_attribution_record(
             )
         })?;
     }
+
+    let mut delimiter_needed = false;
+    if let Ok(existing) = tokio::fs::read(path).await {
+        if !existing.is_empty() && existing.last() != Some(&b'\n') {
+            delimiter_needed = true;
+        }
+    }
+
     let payload =
         serde_json::to_vec(record).context("failed to encode training proxy attribution record")?;
     let mut file = tokio::fs::OpenOptions::new()
@@ -405,6 +413,14 @@ async fn append_attribution_record(
         .open(path)
         .await
         .with_context(|| format!("failed to open attribution log '{}'", path.display()))?;
+    if delimiter_needed {
+        file.write_all(b"\n").await.with_context(|| {
+            format!(
+                "failed to write attribution log delimiter newline to '{}'",
+                path.display()
+            )
+        })?;
+    }
     file.write_all(&payload).await.with_context(|| {
         format!(
             "failed to write attribution log payload to '{}'",
@@ -826,6 +842,65 @@ mod tests {
         assert_eq!(lines[0], "{\"schema_version\":1,\"existing\":true}");
         assert!(lines[1].contains("\"rollout_id\":\"rollout-append\""));
         assert!(lines[1].contains("\"attempt_id\":\"attempt-append\""));
+        assert!(lines[1].contains("\"status_code\":200"));
+    }
+
+    // Regression: #3172
+    #[tokio::test]
+    async fn integration_spec_3172_c01_training_proxy_inserts_newline_when_existing_log_lacks_trailing_delimiter(
+    ) {
+        let upstream = MockServer::start_async().await;
+        let forwarded = upstream.mock(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"id":"chatcmpl-boundary","object":"chat.completion"}"#);
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let state = Arc::new(
+            TrainingProxyState::from_config(&TrainingProxyConfig {
+                bind: "127.0.0.1:0".to_string(),
+                upstream_base_url: upstream.base_url(),
+                state_dir: temp.path().join(".tau"),
+                request_timeout_ms: 10_000,
+            })
+            .expect("build proxy state"),
+        );
+        std::fs::write(
+            &state.attribution_log_path,
+            "{\"schema_version\":1,\"existing_no_newline\":true}",
+        )
+        .expect("seed non-delimited log");
+
+        let app = build_training_proxy_router(state.clone());
+        let request = Request::builder()
+            .method("POST")
+            .uri(OPENAI_CHAT_COMPLETIONS_ENDPOINT)
+            .header("content-type", "application/json")
+            .header(HEADER_ROLLOUT_ID, "rollout-boundary")
+            .header(HEADER_ATTEMPT_ID, "attempt-boundary")
+            .body(Body::from(r#"{"model":"gpt-4o-mini","messages":[]}"#))
+            .expect("request");
+
+        let response = app.oneshot(request).await.expect("proxy response");
+        assert_eq!(response.status(), StatusCode::OK);
+        forwarded.assert();
+
+        let attribution_log =
+            std::fs::read_to_string(&state.attribution_log_path).expect("read attribution log");
+        let lines: Vec<&str> = attribution_log.lines().collect();
+        assert_eq!(
+            lines.len(),
+            2,
+            "jsonl append should preserve line boundaries for seeded record + new record"
+        );
+        assert_eq!(
+            lines[0],
+            "{\"schema_version\":1,\"existing_no_newline\":true}"
+        );
+        assert!(lines[1].contains("\"rollout_id\":\"rollout-boundary\""));
+        assert!(lines[1].contains("\"attempt_id\":\"attempt-boundary\""));
         assert!(lines[1].contains("\"status_code\":200"));
     }
 

@@ -1,6 +1,6 @@
 # Spec: Issue #3172 - training-proxy JSONL newline delimiter integrity
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 Attribution records are appended to `proxy-attribution.jsonl`. If an existing log ends without a trailing newline, the next appended record can be concatenated to the prior line, breaking JSONL record boundaries.
