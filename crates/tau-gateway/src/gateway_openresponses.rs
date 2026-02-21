@@ -63,6 +63,7 @@ mod memory_runtime;
 mod multi_channel_status;
 mod openai_compat;
 mod openai_compat_runtime;
+mod openresponses_entry_handler;
 mod ops_dashboard_shell;
 mod ops_shell_controls;
 mod ops_shell_handlers;
@@ -143,6 +144,7 @@ use openai_compat::{translate_chat_completions_request, OpenAiChatCompletionsReq
 use openai_compat_runtime::{
     handle_openai_chat_completions, handle_openai_completions, handle_openai_models,
 };
+use openresponses_entry_handler::handle_openresponses;
 use ops_dashboard_shell::{
     handle_ops_dashboard_chat_new, handle_ops_dashboard_chat_send,
     handle_ops_dashboard_memory_create, handle_ops_dashboard_session_detail_reset,
@@ -200,53 +202,6 @@ use types::{
 use webchat_page::render_gateway_webchat_page;
 use websocket::run_gateway_ws_connection;
 use ws_stream_handlers::{handle_gateway_ws_upgrade, run_dashboard_stream_loop};
-
-async fn handle_openresponses(
-    State(state): State<Arc<GatewayOpenResponsesServerState>>,
-    headers: HeaderMap,
-    body: Bytes,
-) -> Response {
-    let principal = match authorize_gateway_request(&state, &headers) {
-        Ok(principal) => principal,
-        Err(error) => return error.into_response(),
-    };
-    if let Err(error) = enforce_gateway_rate_limit(&state, principal.as_str()) {
-        return error.into_response();
-    }
-
-    let body_limit = state
-        .config
-        .max_input_chars
-        .saturating_mul(INPUT_BODY_SIZE_MULTIPLIER)
-        .max(state.config.max_input_chars);
-    if body.len() > body_limit {
-        return OpenResponsesApiError::payload_too_large(format!(
-            "request body exceeds max size of {} bytes",
-            body_limit
-        ))
-        .into_response();
-    }
-
-    let request = match serde_json::from_slice::<OpenResponsesRequest>(&body) {
-        Ok(request) => request,
-        Err(error) => {
-            return OpenResponsesApiError::bad_request(
-                "malformed_json",
-                format!("failed to parse request body: {error}"),
-            )
-            .into_response();
-        }
-    };
-
-    if request.stream {
-        return stream_openresponses(state, request).await;
-    }
-
-    match execute_openresponses_request(state, request, None).await {
-        Ok(result) => (StatusCode::OK, Json(result.response)).into_response(),
-        Err(error) => error.into_response(),
-    }
-}
 
 async fn execute_openresponses_request(
     state: Arc<GatewayOpenResponsesServerState>,
