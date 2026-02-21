@@ -63,6 +63,7 @@ mod openai_compat;
 mod openai_compat_runtime;
 mod ops_dashboard_shell;
 mod ops_shell_controls;
+mod ops_shell_handlers;
 mod request_translation;
 mod safety_runtime;
 mod server_bootstrap;
@@ -139,6 +140,16 @@ use ops_dashboard_shell::{
     resolve_tau_ops_dashboard_auth_mode,
 };
 use ops_shell_controls::OpsShellControlsQuery;
+use ops_shell_handlers::{
+    handle_ops_dashboard_agent_detail_shell_page, handle_ops_dashboard_agents_shell_page,
+    handle_ops_dashboard_channels_shell_page, handle_ops_dashboard_chat_shell_page,
+    handle_ops_dashboard_config_shell_page, handle_ops_dashboard_deploy_shell_page,
+    handle_ops_dashboard_diagnostics_shell_page, handle_ops_dashboard_login_shell_page,
+    handle_ops_dashboard_memory_graph_shell_page, handle_ops_dashboard_memory_shell_page,
+    handle_ops_dashboard_safety_shell_page, handle_ops_dashboard_session_detail_shell_page,
+    handle_ops_dashboard_sessions_shell_page, handle_ops_dashboard_shell_page,
+    handle_ops_dashboard_tools_jobs_shell_page, handle_ops_dashboard_training_shell_page,
+};
 use request_translation::{sanitize_session_key, translate_openresponses_request};
 use safety_runtime::{
     handle_gateway_safety_policy_get, handle_gateway_safety_policy_put,
@@ -176,97 +187,6 @@ use websocket::run_gateway_ws_connection;
 
 async fn handle_webchat_page() -> Html<String> {
     Html(render_gateway_webchat_page())
-}
-
-macro_rules! define_ops_shell_handler {
-    ($handler_name:ident, $route:expr) => {
-        async fn $handler_name(
-            State(state): State<Arc<GatewayOpenResponsesServerState>>,
-            Query(controls): Query<OpsShellControlsQuery>,
-        ) -> Html<String> {
-            render_tau_ops_dashboard_shell_for_route(&state, $route, controls, None)
-        }
-    };
-}
-
-define_ops_shell_handler!(handle_ops_dashboard_shell_page, TauOpsDashboardRoute::Ops);
-define_ops_shell_handler!(
-    handle_ops_dashboard_agents_shell_page,
-    TauOpsDashboardRoute::Agents
-);
-define_ops_shell_handler!(
-    handle_ops_dashboard_chat_shell_page,
-    TauOpsDashboardRoute::Chat
-);
-define_ops_shell_handler!(
-    handle_ops_dashboard_sessions_shell_page,
-    TauOpsDashboardRoute::Sessions
-);
-define_ops_shell_handler!(
-    handle_ops_dashboard_memory_shell_page,
-    TauOpsDashboardRoute::Memory
-);
-define_ops_shell_handler!(
-    handle_ops_dashboard_memory_graph_shell_page,
-    TauOpsDashboardRoute::MemoryGraph
-);
-define_ops_shell_handler!(
-    handle_ops_dashboard_tools_jobs_shell_page,
-    TauOpsDashboardRoute::ToolsJobs
-);
-define_ops_shell_handler!(
-    handle_ops_dashboard_channels_shell_page,
-    TauOpsDashboardRoute::Channels
-);
-define_ops_shell_handler!(
-    handle_ops_dashboard_config_shell_page,
-    TauOpsDashboardRoute::Config
-);
-define_ops_shell_handler!(
-    handle_ops_dashboard_training_shell_page,
-    TauOpsDashboardRoute::Training
-);
-define_ops_shell_handler!(
-    handle_ops_dashboard_safety_shell_page,
-    TauOpsDashboardRoute::Safety
-);
-define_ops_shell_handler!(
-    handle_ops_dashboard_diagnostics_shell_page,
-    TauOpsDashboardRoute::Diagnostics
-);
-define_ops_shell_handler!(
-    handle_ops_dashboard_deploy_shell_page,
-    TauOpsDashboardRoute::Deploy
-);
-define_ops_shell_handler!(
-    handle_ops_dashboard_login_shell_page,
-    TauOpsDashboardRoute::Login
-);
-
-async fn handle_ops_dashboard_agent_detail_shell_page(
-    State(state): State<Arc<GatewayOpenResponsesServerState>>,
-    AxumPath(_agent_id): AxumPath<String>,
-    Query(controls): Query<OpsShellControlsQuery>,
-) -> Html<String> {
-    render_tau_ops_dashboard_shell_for_route(
-        &state,
-        TauOpsDashboardRoute::AgentDetail,
-        controls,
-        None,
-    )
-}
-
-async fn handle_ops_dashboard_session_detail_shell_page(
-    State(state): State<Arc<GatewayOpenResponsesServerState>>,
-    AxumPath(session_key): AxumPath<String>,
-    Query(controls): Query<OpsShellControlsQuery>,
-) -> Html<String> {
-    render_tau_ops_dashboard_shell_for_route(
-        &state,
-        TauOpsDashboardRoute::Sessions,
-        controls,
-        Some(session_key.as_str()),
-    )
 }
 
 async fn handle_dashboard_shell_page() -> Html<String> {
