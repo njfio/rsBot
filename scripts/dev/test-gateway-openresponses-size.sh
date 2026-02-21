@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 ROOT_MODULE="${REPO_ROOT}/crates/tau-gateway/src/gateway_openresponses.rs"
 EVENTS_MODULE="${REPO_ROOT}/crates/tau-gateway/src/gateway_openresponses/events_status.rs"
-MAX_LINES=540
+MAX_LINES=500
 
 if [[ ! -f "${ROOT_MODULE}" ]]; then
   echo "assertion failed (root module exists): ${ROOT_MODULE}" >&2
@@ -145,5 +145,10 @@ for function_name in \
     exit 1
   fi
 done
+
+if rg -q '^async fn stream_openresponses\\b' "${ROOT_MODULE}"; then
+  echo "assertion failed (stream handler moved): found 'stream_openresponses' in root module" >&2
+  exit 1
+fi
 
 echo "gateway-openresponses size guard passed (${line_count} <= ${MAX_LINES})"
