@@ -1,6 +1,6 @@
 # Spec: Issue #3103 - ops memory-graph filter contracts
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 `/ops/memory-graph` currently supports deterministic structure, focus/highlight,
