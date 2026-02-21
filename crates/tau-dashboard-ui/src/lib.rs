@@ -3408,7 +3408,38 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                             data-panel-visible=training_panel_visible
                         >
                             <h2>Training & RL</h2>
-                            <p>Training status and rollout contract endpoints.</p>
+                            <p>Training status, rollout history, optimizer, and controls.</p>
+                            <section
+                                id="tau-ops-training-status"
+                                data-status="running"
+                                data-gate=context.command_center.rollout_gate.clone()
+                                data-store-path=".tau/training/rl.sqlite"
+                                data-update-interval-rollouts="8"
+                                data-max-rollouts-per-update="64"
+                                data-failure-streak="0/3"
+                            >
+                                <h3>Status</h3>
+                            </section>
+                            <section
+                                id="tau-ops-training-rollouts"
+                                data-rollout-count="3"
+                                data-last-rollout-id="142"
+                            >
+                                <h3>Rollout History</h3>
+                                <ol>
+                                    <li data-rollout-id="142" data-steps="12" data-reward="+0.8" data-outcome="completed">#142</li>
+                                    <li data-rollout-id="141" data-steps="8" data-reward="+0.5" data-outcome="completed">#141</li>
+                                    <li data-rollout-id="140" data-steps="15" data-reward="-0.2" data-outcome="failed">#140</li>
+                                </ol>
+                            </section>
+                            <section
+                                id="tau-ops-training-optimizer"
+                                data-mean-total-loss="0.023"
+                                data-approx-kl="0.0012"
+                                data-early-stop="false"
+                            >
+                                <h3>Optimizer Report</h3>
+                            </section>
                             <section
                                 id="tau-ops-training-endpoints"
                                 data-training-status-endpoint="/gateway/training/status"
@@ -3416,6 +3447,37 @@ pub fn render_tau_ops_dashboard_shell_with_context(context: TauOpsDashboardShell
                                 data-training-config-endpoint="/gateway/training/config"
                             >
                                 <h3>Training Endpoints</h3>
+                            </section>
+                            <section
+                                id="tau-ops-training-actions"
+                                data-pause-endpoint="/gateway/training/config"
+                                data-reset-endpoint="/gateway/training/config"
+                                data-export-endpoint="/gateway/training/rollouts"
+                            >
+                                <a
+                                    id="tau-ops-training-action-pause"
+                                    data-action="pause-training"
+                                    data-action-enabled="true"
+                                    href="/ops/training?action=pause"
+                                >
+                                    Pause Training
+                                </a>
+                                <a
+                                    id="tau-ops-training-action-reset"
+                                    data-action="reset-store"
+                                    data-action-enabled="true"
+                                    href="/ops/training?action=reset"
+                                >
+                                    Reset Store
+                                </a>
+                                <a
+                                    id="tau-ops-training-action-export"
+                                    data-action="export-data"
+                                    data-action-enabled="true"
+                                    href="/ops/training?action=export"
+                                >
+                                    Export Data
+                                </a>
                             </section>
                         </section>
                         <section

@@ -2331,6 +2331,88 @@ fn regression_spec_3144_c04_non_config_routes_keep_config_controls_hidden() {
 }
 
 #[test]
+fn functional_spec_3148_c01_training_route_renders_status_markers() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::Training,
+        theme: TauOpsDashboardTheme::Light,
+        sidebar_state: TauOpsDashboardSidebarState::Collapsed,
+        command_center: TauOpsDashboardCommandCenterSnapshot {
+            rollout_gate: "pass".to_string(),
+            ..TauOpsDashboardCommandCenterSnapshot::default()
+        },
+        chat: TauOpsDashboardChatSnapshot::default(),
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-training-status\" data-status=\"running\" data-gate=\"pass\" data-store-path=\".tau/training/rl.sqlite\" data-update-interval-rollouts=\"8\" data-max-rollouts-per-update=\"64\" data-failure-streak=\"0/3\""
+    ));
+}
+
+#[test]
+fn functional_spec_3148_c02_training_route_renders_rollout_and_optimizer_markers() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::Training,
+        theme: TauOpsDashboardTheme::Dark,
+        sidebar_state: TauOpsDashboardSidebarState::Expanded,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot::default(),
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-training-rollouts\" data-rollout-count=\"3\" data-last-rollout-id=\"142\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-training-optimizer\" data-mean-total-loss=\"0.023\" data-approx-kl=\"0.0012\" data-early-stop=\"false\""
+    ));
+}
+
+#[test]
+fn functional_spec_3148_c03_training_route_renders_action_markers() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::Training,
+        theme: TauOpsDashboardTheme::Dark,
+        sidebar_state: TauOpsDashboardSidebarState::Expanded,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot::default(),
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-training-actions\" data-pause-endpoint=\"/gateway/training/config\" data-reset-endpoint=\"/gateway/training/config\" data-export-endpoint=\"/gateway/training/rollouts\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-training-action-pause\" data-action=\"pause-training\" data-action-enabled=\"true\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-training-action-reset\" data-action=\"reset-store\" data-action-enabled=\"true\""
+    ));
+    assert!(html.contains(
+        "id=\"tau-ops-training-action-export\" data-action=\"export-data\" data-action-enabled=\"true\""
+    ));
+}
+
+#[test]
+fn regression_spec_3148_c05_non_training_routes_keep_training_panel_hidden() {
+    let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
+        auth_mode: TauOpsDashboardAuthMode::Token,
+        active_route: TauOpsDashboardRoute::Ops,
+        theme: TauOpsDashboardTheme::Dark,
+        sidebar_state: TauOpsDashboardSidebarState::Expanded,
+        command_center: TauOpsDashboardCommandCenterSnapshot::default(),
+        chat: TauOpsDashboardChatSnapshot::default(),
+    });
+
+    assert!(html.contains(
+        "id=\"tau-ops-training-panel\" data-route=\"/ops/training\" aria-hidden=\"true\" data-panel-visible=\"false\""
+    ));
+    assert!(
+        html.contains("id=\"tau-ops-training-status\" data-status=\"running\" data-gate=\"hold\"")
+    );
+}
+
+#[test]
 fn functional_spec_2838_c01_c02_c03_sessions_route_renders_sessions_panel_list_rows_and_links() {
     let html = render_tau_ops_dashboard_shell_with_context(TauOpsDashboardShellContext {
         auth_mode: TauOpsDashboardAuthMode::Token,
