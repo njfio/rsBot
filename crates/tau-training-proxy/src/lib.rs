@@ -389,6 +389,14 @@ async fn append_attribution_record(
     path: &Path,
     record: &TrainingProxyAttributionRecord,
 ) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await.with_context(|| {
+            format!(
+                "failed to create attribution log parent directory '{}'",
+                parent.display()
+            )
+        })?;
+    }
     let payload =
         serde_json::to_vec(record).context("failed to encode training proxy attribution record")?;
     let mut file = tokio::fs::OpenOptions::new()
@@ -461,6 +469,43 @@ mod tests {
         assert!(error
             .to_string()
             .contains("header 'x-sequence-id' must be an unsigned integer"));
+    }
+
+    #[test]
+    fn spec_3164_c01_parse_training_proxy_attribution_rejects_whitespace_rollout_id() {
+        let mut headers = HeaderMap::new();
+        headers.insert(HEADER_ROLLOUT_ID, "   ".parse().expect("header"));
+        headers.insert(HEADER_ATTEMPT_ID, "attempt-2".parse().expect("header"));
+
+        let error = parse_training_proxy_attribution(&headers)
+            .expect_err("whitespace rollout id must fail parsing");
+        assert!(
+            error
+                .to_string()
+                .contains("header 'x-rollout-id' cannot be empty"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn spec_3164_c02_parse_training_proxy_attribution_rejects_non_utf8_trace_id() {
+        let mut headers = HeaderMap::new();
+        headers.insert(HEADER_ROLLOUT_ID, "rollout-1".parse().expect("header"));
+        headers.insert(HEADER_ATTEMPT_ID, "attempt-2".parse().expect("header"));
+        headers.insert(
+            HEADER_TRACE_ID,
+            axum::http::HeaderValue::from_bytes(&[0xF0, 0x80, 0x80, 0x80])
+                .expect("non-utf8 header value"),
+        );
+
+        let error = parse_training_proxy_attribution(&headers)
+            .expect_err("non-utf8 trace id must fail parsing");
+        assert!(
+            error
+                .to_string()
+                .contains("header 'x-trace-id' must be valid utf-8"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]
@@ -684,6 +729,104 @@ mod tests {
         assert!(attribution_log.contains("\"attempt_id\":\"attempt-fail\""));
         assert!(attribution_log.contains("\"error_code\":\"upstream_request_failed\""));
         assert!(!attribution_log.contains("\"status_code\""));
+    }
+
+    // Regression: #3164
+    #[tokio::test]
+    async fn integration_spec_3164_c03_training_proxy_recreates_missing_log_directory() {
+        let upstream = MockServer::start_async().await;
+        let forwarded = upstream.mock(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"id":"chatcmpl-recovery","object":"chat.completion"}"#);
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let state = Arc::new(
+            TrainingProxyState::from_config(&TrainingProxyConfig {
+                bind: "127.0.0.1:0".to_string(),
+                upstream_base_url: upstream.base_url(),
+                state_dir: temp.path().join(".tau"),
+                request_timeout_ms: 10_000,
+            })
+            .expect("build proxy state"),
+        );
+        let training_root = state
+            .attribution_log_path
+            .parent()
+            .expect("attribution log parent")
+            .to_path_buf();
+        std::fs::remove_dir_all(&training_root).expect("remove training root");
+        assert!(!training_root.exists());
+
+        let app = build_training_proxy_router(state.clone());
+        let request = Request::builder()
+            .method("POST")
+            .uri(OPENAI_CHAT_COMPLETIONS_ENDPOINT)
+            .header("content-type", "application/json")
+            .header(HEADER_ROLLOUT_ID, "rollout-recreate")
+            .header(HEADER_ATTEMPT_ID, "attempt-recreate")
+            .body(Body::from(r#"{"model":"gpt-4o-mini","messages":[]}"#))
+            .expect("request");
+
+        let response = app.oneshot(request).await.expect("proxy response");
+        assert_eq!(response.status(), StatusCode::OK);
+        forwarded.assert();
+
+        let attribution_log =
+            std::fs::read_to_string(&state.attribution_log_path).expect("read attribution log");
+        assert!(attribution_log.contains("\"rollout_id\":\"rollout-recreate\""));
+        assert!(attribution_log.contains("\"attempt_id\":\"attempt-recreate\""));
+        assert!(attribution_log.contains("\"status_code\":200"));
+    }
+
+    #[tokio::test]
+    async fn integration_spec_3164_c04_training_proxy_appends_without_clobbering_existing_entries()
+    {
+        let upstream = MockServer::start_async().await;
+        let forwarded = upstream.mock(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"id":"chatcmpl-append","object":"chat.completion"}"#);
+        });
+
+        let temp = tempdir().expect("tempdir");
+        let state = Arc::new(
+            TrainingProxyState::from_config(&TrainingProxyConfig {
+                bind: "127.0.0.1:0".to_string(),
+                upstream_base_url: upstream.base_url(),
+                state_dir: temp.path().join(".tau"),
+                request_timeout_ms: 10_000,
+            })
+            .expect("build proxy state"),
+        );
+        let existing = "{\"schema_version\":1,\"existing\":true}\n";
+        std::fs::write(&state.attribution_log_path, existing).expect("seed existing log");
+
+        let app = build_training_proxy_router(state.clone());
+        let request = Request::builder()
+            .method("POST")
+            .uri(OPENAI_CHAT_COMPLETIONS_ENDPOINT)
+            .header("content-type", "application/json")
+            .header(HEADER_ROLLOUT_ID, "rollout-append")
+            .header(HEADER_ATTEMPT_ID, "attempt-append")
+            .body(Body::from(r#"{"model":"gpt-4o-mini","messages":[]}"#))
+            .expect("request");
+
+        let response = app.oneshot(request).await.expect("proxy response");
+        assert_eq!(response.status(), StatusCode::OK);
+        forwarded.assert();
+
+        let attribution_log =
+            std::fs::read_to_string(&state.attribution_log_path).expect("read attribution log");
+        let lines: Vec<&str> = attribution_log.lines().collect();
+        assert_eq!(lines.len(), 2, "log should contain seeded + appended entry");
+        assert_eq!(lines[0], "{\"schema_version\":1,\"existing\":true}");
+        assert!(lines[1].contains("\"rollout_id\":\"rollout-append\""));
+        assert!(lines[1].contains("\"attempt_id\":\"attempt-append\""));
+        assert!(lines[1].contains("\"status_code\":200"));
     }
 
     #[tokio::test]
