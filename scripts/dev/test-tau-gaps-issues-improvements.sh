@@ -35,7 +35,7 @@ doc_contents="$(cat "${DOC_PATH}")"
 # Header/snapshot markers.
 assert_contains "${doc_contents}" "# Tau: Gaps, Issues & Improvements (Review #31)" "header review marker"
 assert_contains "${doc_contents}" "**Date:** 2026-02-21" "header date marker"
-assert_contains "${doc_contents}" "**HEAD:** \`a3428b21\`" "header head marker"
+assert_contains "${doc_contents}" "**HEAD:** \`0a99c010\`" "header head marker"
 
 # Roadmap closure rows refreshed from stale Open/Partial states.
 assert_contains "${doc_contents}" "| 9 | Clean stale branches | Open | **Done** |" "row 9 closure"
@@ -54,6 +54,16 @@ assert_contains "${doc_contents}" "| External coding-agent bridge protocol | #26
 assert_not_contains "${doc_contents}" "| Operator deployment guide | **Missing** |" "operator guide no longer missing"
 assert_contains "${doc_contents}" "| Operator deployment guide | **Done** | \`docs/guides/operator-deployment-guide.md\` |" "operator guide done"
 assert_contains "${doc_contents}" "| API reference | **Done** | \`docs/guides/gateway-api-reference.md\` |" "api reference done"
+
+# Repository hygiene rows should reflect delivered contributor/security docs.
+assert_not_contains "${doc_contents}" "| CONTRIBUTING.md | **Missing** |" "contributing no longer missing"
+assert_not_contains "${doc_contents}" "| SECURITY.md | **Missing** |" "security no longer missing"
+assert_contains "${doc_contents}" "| CONTRIBUTING.md | **Done** | \`CONTRIBUTING.md\` tracked at repository root |" "contributing done"
+assert_contains "${doc_contents}" "| SECURITY.md | **Done** | \`SECURITY.md\` tracked at repository root |" "security done"
+
+# Under-tested snapshot signals should reflect current test-depth waves.
+assert_contains "${doc_contents}" "| tau-training-proxy | 14 direct test markers |" "training-proxy updated count"
+assert_contains "${doc_contents}" "| kamn-core | 12 direct test markers |" "kamn-core updated count"
 
 # Stale crate references from earlier drafts must stay removed.
 assert_not_contains "${doc_contents}" "tau-context" "stale tau-context reference"
