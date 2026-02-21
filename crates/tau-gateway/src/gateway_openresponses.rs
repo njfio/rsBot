@@ -70,6 +70,7 @@ mod ops_shell_controls;
 mod ops_shell_handlers;
 mod request_preflight;
 mod request_translation;
+mod root_utilities;
 mod safety_runtime;
 mod server_bootstrap;
 mod server_state;
@@ -168,6 +169,9 @@ use request_preflight::{
     system_time_to_unix_ms, validate_gateway_request_body_size,
 };
 use request_translation::{sanitize_session_key, translate_openresponses_request};
+use root_utilities::derive_gateway_preflight_token_limit;
+#[cfg(test)]
+use root_utilities::validate_gateway_openresponses_bind;
 use safety_runtime::{
     handle_gateway_safety_policy_get, handle_gateway_safety_policy_put,
     handle_gateway_safety_rules_get, handle_gateway_safety_rules_put, handle_gateway_safety_test,
@@ -204,17 +208,3 @@ use types::{
 use webchat_page::render_gateway_webchat_page;
 use websocket::run_gateway_ws_connection;
 use ws_stream_handlers::{handle_gateway_ws_upgrade, run_dashboard_stream_loop};
-
-fn derive_gateway_preflight_token_limit(max_input_chars: usize) -> Option<u32> {
-    if max_input_chars == 0 {
-        return None;
-    }
-    let chars = u32::try_from(max_input_chars).unwrap_or(u32::MAX);
-    Some(chars.saturating_add(3) / 4)
-}
-
-#[cfg(test)]
-fn validate_gateway_openresponses_bind(bind: &str) -> Result<SocketAddr> {
-    bind.parse::<SocketAddr>()
-        .with_context(|| format!("invalid gateway socket address '{bind}'"))
-}
