@@ -1,6 +1,6 @@
 # Spec: Issue #3272 - move openresponses entry handler to dedicated module
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 `gateway_openresponses.rs` still defines `handle_openresponses`, the endpoint entry handler for `/v1/responses`. This handler can be isolated into a dedicated module without changing behavior.
