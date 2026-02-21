@@ -1,6 +1,6 @@
 # Spec: Issue #3176 - tau-gaps report stale-claim resynchronization
 
-Status: Accepted
+Status: Implemented
 
 ## Problem Statement
 `tasks/tau-gaps-issues-improvements.md` reports stale status in multiple sections, including repo hygiene and testing depth, and `scripts/dev/test-tau-gaps-issues-improvements.sh` enforces older marker expectations.

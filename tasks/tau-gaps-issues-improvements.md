@@ -1,7 +1,7 @@
 # Tau: Gaps, Issues & Improvements (Review #31)
 
 **Date:** 2026-02-21
-**HEAD:** `a3428b21` (178 milestones, 434,320 tracked lines, 44 crates, 491 specs)
+**HEAD:** `0a99c010` (181 milestones, 44 crates)
 **Roadmap closure:** 22/23 done, 1 partial, 0 open
 
 This document supersedes Review #30 and refreshes closure status/evidence against the current repository and GitHub issue state.
@@ -32,7 +32,7 @@ This document supersedes Review #30 and refreshes closure status/evidence agains
 | 3 | Add `.env.example` | Done | **Done** | `.env.example` exists |
 | 4 | Audit log sanitization | Partial | **Done** | `crates/tau-runtime/src/observability_loggers_runtime.rs` includes `spec_2612_*` redaction tests |
 | 5 | Integration test suite | Open | **Done** | `tests/integration/tests/agent_tool_memory_roundtrip.rs` exists (4 integration tests) |
-| 6 | Expand under-tested crates | Partial | **Partial** | Direct crate-local test marker counts remain low in this snapshot (`tau-training-proxy` 6, `kamn-core` 4, `kamn-sdk` 5) |
+| 6 | Expand under-tested crates | Partial | **Partial** | Depth increased in recent waves (`tau-training-proxy` 14, `kamn-core` 12); remaining lower-depth target is `kamn-sdk` (8) plus adjacent QA surfaces |
 | 7 | Add CHANGELOG.md | Done | **Done** | `CHANGELOG.md` exists |
 | 8 | cargo-deny / cargo-audit | Done | **Done** | `deny.toml` + `.github/workflows/security.yml` |
 | 9 | Clean stale branches | Open | **Done** | `scripts/dev/stale-merged-branch-prune.sh` exists; remote heads reduced (current: 380) |
@@ -60,7 +60,7 @@ This document supersedes Review #30 and refreshes closure status/evidence agains
 ### 2.1 Remaining Functional Gaps
 
 1. **Under-tested crate wave follow-through**
-   The original expansion issue closed, but direct crate-local test depth remains lower than desired for selected crates (`tau-training-proxy`, `kamn-core`, `kamn-sdk`, and adjacent QA surfaces).
+   The original expansion issue closed and recent waves raised direct crate-local depth in `tau-training-proxy` and `kamn-core`; remaining lower-depth target is `kamn-sdk` plus adjacent QA surfaces.
 
 2. **Cortex decision automation (optional roadmap extension)**
    `/cortex/chat` is now LLM-backed, but automated supervisor actuation/routing overrides are still a separate design decision beyond the delivered observer/chat baseline.
@@ -99,10 +99,10 @@ This document supersedes Review #30 and refreshes closure status/evidence agains
 | Area | Current Signal | Recommendation |
 |------|----------------|----------------|
 | Integration breadth | `tests/integration/` contains one file with 4 tests | Expand scenario count for channel routing/compaction/delegation |
-| tau-diagnostics | 6 direct test markers | Add edge-case coverage for audit aggregation and telemetry compatibility |
-| tau-training-proxy | 6 direct test markers | Add persistence/recovery and malformed-rollout cases |
-| kamn-core | 4 direct test markers | Add boundary tests for identity/auth edge cases |
-| kamn-sdk | 5 direct test markers | Add contract and integration fixture coverage for SDK call paths |
+| tau-diagnostics | 11 direct test markers | Continue edge-case coverage for audit aggregation and telemetry compatibility |
+| tau-training-proxy | 14 direct test markers | Continue transport/read failure and persistence boundary coverage |
+| kamn-core | 12 direct test markers | Continue identity/auth malformed-input and boundary hardening coverage |
+| kamn-sdk | 8 direct test markers | Add contract and integration fixture coverage for SDK call paths |
 
 ### 4.2 Missing/Light Categories
 
@@ -136,8 +136,8 @@ The Leptos PRD exists at `specs/tau-ops-dashboard-prd.md`, while the shipped das
 |------|--------|----------|
 | Stale branch hygiene | **Improved** | `scripts/dev/stale-merged-branch-prune.sh`; remote branch count currently 380 |
 | Dependabot backlog | **Open** | Open dependency PRs #2710-#2714 |
-| CONTRIBUTING.md | **Missing** | No root `CONTRIBUTING.md` currently tracked |
-| SECURITY.md | **Missing** | No root `SECURITY.md` currently tracked |
+| CONTRIBUTING.md | **Done** | `CONTRIBUTING.md` tracked at repository root |
+| SECURITY.md | **Done** | `SECURITY.md` tracked at repository root |
 
 ---
 
@@ -150,7 +150,7 @@ The Leptos PRD exists at `specs/tau-ops-dashboard-prd.md`, while the shipped das
 | SSRF protections | **Done** | Existing gateway safety guards remain in tree |
 | Secret-leak detection controls | **Done** | `crates/tau-safety/src/lib.rs` pattern + policy controls |
 | Log sanitization audit formalization | **Done** | `spec_2612_*` coverage in observability logger runtime |
-| Key rotation CLI | **Missing** | No explicit key-rotation command contract in current CLI |
+| Key rotation CLI | **Done** | `/integration-auth rotate` command contract in `crates/tau-provider/src/integration_auth.rs` |
 
 ---
 
@@ -163,7 +163,7 @@ The Leptos PRD exists at `specs/tau-ops-dashboard-prd.md`, while the shipped das
 | Deployment ops guide | **Done** | `docs/guides/deployment-ops.md` |
 | Runbook ownership map | **Done** | `docs/guides/runbook-ownership-map.md` |
 | Architecture ADR trail | **Done** | `docs/architecture/adr-00*.md` set |
-| High-level dependency graph doc | **Partial** | ADRs exist; consolidated crate dependency diagram is still not published |
+| High-level dependency graph doc | **Done** | `docs/architecture/crate-dependency-diagram.md` published |
 
 ---
 
@@ -190,11 +190,11 @@ The Leptos PRD exists at `specs/tau-ops-dashboard-prd.md`, while the shipped das
 3. **Expand under-tested crate coverage** with explicit target thresholds and conformance mapping.
 4. **Continue gateway runtime modularization** until hotspot pressure is reduced further.
 5. **Publish crate dependency architecture diagram** for onboarding and ops.
-6. **Add root `CONTRIBUTING.md` and `SECURITY.md`** for contributor/security process clarity.
+6. **Sustain contributor/security doc freshness** with release-aligned review cadence.
 
 ### P2 - Medium-Term Enhancements
 
-7. **Add key-rotation CLI flow** for encrypted credential store operations.
+7. **Extend key-rotation operator runbook coverage** for encrypted credential store operations.
 8. **Grow property/concurrency testing** for ranking/compaction/process paths.
 9. **Finalize dashboard stack direction** (maintain HTML/JS shell vs Leptos migration).
 
@@ -202,4 +202,4 @@ The Leptos PRD exists at `specs/tau-ops-dashboard-prd.md`, while the shipped das
 
 ## Summary
 
-This refresh removes stale follow-up status drift: all prior M104 follow-up issues (`#2608`, `#2609`, `#2610`, `#2611`, `#2612`, `#2613`, `#2616`, `#2617`, `#2618`, `#2619`) are now reflected as **Closed**. The roadmap table is updated to current implementation evidence, and the main remaining gap is quality depth in under-tested crates rather than missing foundational features.
+This refresh keeps M104 follow-up issue closure status current and updates stale hygiene/testing claims to match current repository evidence. The main remaining gap is quality depth follow-through in `kamn-sdk` and adjacent QA surfaces rather than missing foundational docs or controls.
