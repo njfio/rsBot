@@ -1,6 +1,6 @@
 # Spec: Issue #3280 - move gateway root utility helpers to dedicated module
 
-Status: Reviewed
+Status: Implemented
 
 ## Problem Statement
 `gateway_openresponses.rs` still defines two utility helpers. These can be extracted into a dedicated module so root remains focused on module composition and wiring.
