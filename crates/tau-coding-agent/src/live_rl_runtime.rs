@@ -669,7 +669,10 @@ fn parse_positive_usize_env(raw: Option<&str>, default: usize, key: &str) -> Res
 
 #[cfg(test)]
 mod tests {
-    use super::{LiveRlRuntimeBridge, LiveRlRuntimeConfig, LiveRlRuntimeGate};
+    use super::{
+        compute_live_reward, LiveRlActiveRun, LiveRlRuntimeBridge, LiveRlRuntimeConfig,
+        LiveRlRuntimeGate,
+    };
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use tau_agent_core::AgentEvent;
@@ -795,5 +798,88 @@ mod tests {
         assert_eq!(snapshot.gate, LiveRlRuntimeGate::Hold);
         assert_eq!(snapshot.consecutive_failures, 1);
         assert_eq!(snapshot.last_error.as_deref(), Some("forced failure"));
+    }
+
+    #[test]
+    fn spec_c05_unit_live_reward_breakdown_scores_deterministically() {
+        let run = LiveRlActiveRun {
+            rollout_id: "live-rl-rollout-1".to_string(),
+            attempt_id: "live-rl-rollout-1:attempt-1".to_string(),
+            prompt: Some("summarize release risks".to_string()),
+            assistant_reply: Some("Release risks summarized.".to_string()),
+            turns: 1,
+            tool_errors: 0,
+            safety_blocked: false,
+        };
+        assert_eq!(compute_live_reward(&run), 1.0);
+
+        let noisy = LiveRlActiveRun {
+            tool_errors: 2,
+            ..run.clone()
+        };
+        assert_eq!(compute_live_reward(&noisy), 0.5);
+
+        let no_reply = LiveRlActiveRun {
+            assistant_reply: None,
+            turns: 4,
+            ..run.clone()
+        };
+        assert_eq!(compute_live_reward(&no_reply), 0.25);
+
+        let blocked = LiveRlActiveRun {
+            safety_blocked: true,
+            ..run
+        };
+        assert_eq!(compute_live_reward(&blocked), -1.0);
+    }
+
+    #[tokio::test]
+    async fn spec_c06_functional_live_rollout_span_persists_reward_breakdown() {
+        let store: Arc<dyn TrainingStore + Send + Sync> = Arc::new(InMemoryTrainingStore::new());
+        let bridge = LiveRlRuntimeBridge::for_tests(
+            store.clone(),
+            LiveRlRuntimeConfig {
+                enabled: true,
+                store_path: ".tau/training/store.sqlite".into(),
+                update_interval_rollouts: 8,
+                max_rollouts_per_update: 32,
+                max_failure_streak: 3,
+            },
+        );
+
+        bridge.handle_event(AgentEvent::AgentStart).await;
+        bridge
+            .handle_event(AgentEvent::MessageAdded {
+                message: Message::user("summarize latest deploy status"),
+            })
+            .await;
+        bridge
+            .handle_event(AgentEvent::MessageAdded {
+                message: Message::assistant_text("Deploy completed with no failures."),
+            })
+            .await;
+        bridge
+            .handle_event(AgentEvent::AgentEnd { new_messages: 2 })
+            .await;
+
+        let rollouts = store
+            .query_rollouts(RolloutQuery {
+                statuses: Some(vec![RolloutStatus::Succeeded]),
+                ..RolloutQuery::default()
+            })
+            .await
+            .expect("query succeeded rollouts");
+        assert_eq!(rollouts.len(), 1);
+
+        let spans = store
+            .query_spans(rollouts[0].rollout_id.as_str(), None)
+            .await
+            .expect("query spans");
+        assert_eq!(spans.len(), 1);
+        let attrs = &spans[0].attributes;
+        assert!(attrs.contains_key("reward_completion"));
+        assert!(attrs.contains_key("reward_reliability"));
+        assert!(attrs.contains_key("reward_safety"));
+        assert!(attrs.contains_key("reward_efficiency"));
     }
 }
