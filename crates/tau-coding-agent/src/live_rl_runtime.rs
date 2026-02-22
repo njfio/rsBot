@@ -602,7 +602,7 @@ impl LiveRlRuntimeBridge {
 }
 
 fn build_final_decision_span(run: &LiveRlActiveRun) -> TrainingSpan {
-    let reward = compute_live_reward(run);
+    let reward = compute_live_reward_breakdown(run);
     let mut span = TrainingSpan::new(
         run.rollout_id.as_str(),
         run.attempt_id.as_str(),
@@ -620,7 +620,16 @@ fn build_final_decision_span(run: &LiveRlActiveRun) -> TrainingSpan {
         "assistant_text".to_string(),
         json!(run.assistant_reply.clone().unwrap_or_default()),
     );
-    span.attributes.insert("reward".to_string(), json!(reward));
+    span.attributes
+        .insert("reward".to_string(), json!(reward.composite));
+    span.attributes
+        .insert("reward_completion".to_string(), json!(reward.completion));
+    span.attributes
+        .insert("reward_reliability".to_string(), json!(reward.reliability));
+    span.attributes
+        .insert("reward_safety".to_string(), json!(reward.safety));
+    span.attributes
+        .insert("reward_efficiency".to_string(), json!(reward.efficiency));
     span.attributes
         .insert("turns".to_string(), json!(run.turns));
     span.attributes
@@ -632,14 +641,58 @@ fn build_final_decision_span(run: &LiveRlActiveRun) -> TrainingSpan {
     span
 }
 
+#[cfg(test)]
 fn compute_live_reward(run: &LiveRlActiveRun) -> f64 {
+    compute_live_reward_breakdown(run).composite
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LiveRewardBreakdown {
+    composite: f64,
+    completion: f64,
+    reliability: f64,
+    safety: f64,
+    efficiency: f64,
+}
+
+fn compute_live_reward_breakdown(run: &LiveRlActiveRun) -> LiveRewardBreakdown {
+    let completion = if run
+        .assistant_reply
+        .as_ref()
+        .is_some_and(|reply| !reply.trim().is_empty())
+    {
+        0.5
+    } else {
+        0.0
+    };
+    let reliability = -0.25 * f64::from(run.tool_errors.min(2));
+    let efficiency = if run.turns <= 2 {
+        0.5
+    } else if run.turns <= 4 {
+        0.25
+    } else {
+        0.0
+    };
+    let safety = if run.safety_blocked { -1.0 } else { 0.0 };
+
     if run.safety_blocked {
-        return -1.0;
+        return LiveRewardBreakdown {
+            composite: -1.0,
+            completion,
+            reliability,
+            safety,
+            efficiency,
+        };
     }
-    if run.tool_errors > 0 {
-        return 0.25;
+
+    let composite = (completion + reliability + efficiency).clamp(-1.0, 1.0);
+    LiveRewardBreakdown {
+        composite,
+        completion,
+        reliability,
+        safety,
+        efficiency,
     }
-    1.0
 }
 
 fn parse_bool_env(raw: &str) -> Option<bool> {
