@@ -11,6 +11,7 @@ mod apo;
 mod collector;
 mod gae;
 mod ppo;
+mod reward_inference;
 mod safety_penalty_calibration;
 
 pub use adapters::{
@@ -25,6 +26,9 @@ pub use gae::{compute_gae_batch_from_slices, compute_gae_batch_from_trajectory, 
 pub use ppo::{
     compute_ppo_loss, compute_ppo_update, PpoConfig, PpoLossBreakdown, PpoOptimizerStep, PpoSample,
     PpoUpdateSummary,
+};
+pub use reward_inference::{
+    RewardInference, RewardInferenceInput, RewardInferenceOutput, TraceBasedRewardInference,
 };
 pub use safety_penalty_calibration::{
     calibrate_safety_penalty_grid, select_default_safety_penalty_coefficient,
